@@ -1,0 +1,3 @@
+[submodule "felan/data"]
+	path = felan/data
+	url = https://huggingface.co/datasets/schulze18/felan
