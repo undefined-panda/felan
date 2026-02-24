@@ -1,0 +1,18 @@
+name: felan
+channels:
+- conda-forge
+- nvidia
+- defaults
+dependencies:
+- python=3.10
+- pip
+- pip:
+  - matplotlib
+  - jax[cuda12]==0.6.0
+  - flax
+  - optax
+  - mujoco==3.3.4
+  - mujoco-mjx==3.3.4
+  - tensorboardX
+  - dill
+  - PyQt5
