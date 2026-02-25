@@ -274,9 +274,8 @@ class DeLaN(nn.Module):
 
         return gen_force
 
-    def kinetic_energy(self, qd: jnp.ndarray, M) -> jnp.ndarray:
-        T = 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), M @ qd).squeeze(-1)
-        return T
+    def kinetic_energy(self, qd: jnp.ndarray, H) -> jnp.ndarray:
+        return 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), H @ qd).squeeze(-1)
 
     def potential_energy_NN(self, q: jnp.ndarray):
         # Init Potential Network

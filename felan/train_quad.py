@@ -230,7 +230,7 @@ if __name__ == "__main__":
              # MJX
              'dyn_parametrization': dyn_parametrization,
              #
-             'max_epoch': 100
+             'max_epoch': 2000
             }
 
     if flag_normalize_tau:

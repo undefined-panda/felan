@@ -256,14 +256,13 @@ class DeLaNPotParam(nn.Module):
 
         return gen_force
 
-    def kinetic_energy(self, qd: jnp.ndarray, M) -> jnp.ndarray:
-        T = 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), M @ qd).squeeze(-1)
-        return T
+    def kinetic_energy(self, qd: jnp.ndarray, H) -> jnp.ndarray:
+        return 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), H @ qd).squeeze(-1)
     
     def potential_energy(self, rb, rot_base_to_world, mass_value, prod_mass_r):
         total_value = mass_value * rb[..., None] + rot_base_to_world @ prod_mass_r
-        V = jnp.dot(self.gravity_array13, total_value)
-        return jnp.squeeze(V, axis=-1)
+        P = jnp.dot(self.gravity_array13, total_value)
+        return jnp.squeeze(P, axis=-1)
 
     def lagrangian_euler_rates_vb_fn(self, q_full, qd_full):
         

@@ -198,7 +198,7 @@ def get_config_from_dict(kwargs):
         lleg_output_size = int((nq_leg ** 2 + nq_leg) / 2)
         lleg_diag_size = nq_leg
         lleg_lower_size = lleg_output_size - lleg_diag_size
-        # ULi, RLi, LLi
+        # LLiL, LLiR, LLi
         lleg_full_output_size = nq_leg * (lin_vel_dof + ang_vel_dof) + lleg_output_size
 
         lleg_tril_indices_nq = jnp.tril_indices(nq_leg)
@@ -253,7 +253,7 @@ def get_config_from_dict(kwargs):
         lleg_output_size = int((nq_leg ** 2 + nq_leg) / 2)
         lleg_diag_size = nq_leg
         lleg_lower_size = lleg_output_size - lleg_diag_size
-        # ULi, RLi, LLi
+        # LLiL, LLiR, LLi
         lleg_full_output_size = nq_leg * (lin_vel_dof + ang_vel_dof) + lleg_output_size
 
         lleg_tril_indices_nq = jnp.tril_indices(nq_leg)
@@ -281,7 +281,7 @@ def get_config_from_dict(kwargs):
         lleg_output_size = int((nq_leg ** 2 + nq_leg) / 2)
         lleg_diag_size = nq_leg
         lleg_lower_size = lleg_output_size - lleg_diag_size
-        # ULi, RLi, LLi
+        # LiL, LiR, Li
         lleg_full_output_size = nq_leg * (lin_vel_dof + ang_vel_dof) + lleg_output_size
 
         lleg_tril_indices_nq = jnp.tril_indices(nq_leg)
@@ -360,9 +360,10 @@ class FeLaNBranchSparsity(nn.Module):
 
     def setup(self):
 
-        # UL, UR, RR
+        # LL, LRL, LR
         self.lbase_net = ComponentNN(config=self.config.base_config)
 
+        # LiL, LiR, Li
         if self.config.robot_type == 'humanoid':
             self.ltorso_net = ComponentNN(config=self.config.torso_config)
             self.ltorso_arm_left_net = ComponentNN(config=self.config.torso_arm_config)
@@ -379,7 +380,6 @@ class FeLaNBranchSparsity(nn.Module):
         elif self.config.robot_type == 'quad_with_arm':
             self.larm_net = ComponentNN(config=self.config.arm_config)
 
-            # ULi, RLi, LLi
             self.lleg_LF_net = ComponentNN(config=self.config.leg_config)
             self.lleg_RF_net = ComponentNN(config=self.config.leg_config)
             self.lleg_LH_net = ComponentNN(config=self.config.leg_config)
@@ -388,7 +388,6 @@ class FeLaNBranchSparsity(nn.Module):
             self.get_inertia_matrix = self.get_inertia_matrix_quad_with_arm
 
         elif self.config.robot_type == 'quad':
-            # ULi, RLi, LLi
             self.lleg_LF_net = ComponentNN(config=self.config.leg_config)
             self.lleg_RF_net = ComponentNN(config=self.config.leg_config)
             self.lleg_LH_net = ComponentNN(config=self.config.leg_config)
@@ -425,25 +424,25 @@ class FeLaNBranchSparsity(nn.Module):
 
     def get_base_nn_output(self, q):
         Ubase = self.vmap_get_L_from_output(self.lbase_net(q), self.lbase_net.config)
-        UL = Ubase[:,:3,:3]
-        UR = Ubase[:,3:6,:3]
-        RR = Ubase[:,3:6,3:6]
-        return UL, UR, RR
+        LL = Ubase[:,:3,:3]
+        LRL = Ubase[:,3:6,:3]
+        LR = Ubase[:,3:6,3:6]
+        return LL, LRL, LR
     
     def get_torso_nn_output(self, qtorso):
         output_lengths = [self.config.nq_torso * self.config.lin_vel_dof,
                           self.config.nq_torso * self.config.ang_vel_dof,
                           self.ltorso_net.config.l_output_size]
 
-        UT, RT, LT = split_by_lengths(self.ltorso_net(qtorso),
+        LiL, LiR, Li = split_by_lengths(self.ltorso_net(qtorso),
                                       output_lengths,
                                       axis=1)
-        LT = self.vmap_get_L_from_output(LT, self.ltorso_net.config)
-        return UT.reshape(-1, self.ltorso_net.config.nq, self.config.lin_vel_dof), RT.reshape(-1, self.ltorso_net.config.nq, self.config.ang_vel_dof), LT
+        Li = self.vmap_get_L_from_output(Li, self.ltorso_net.config)
+        return LiL.reshape(-1, self.ltorso_net.config.nq, self.config.lin_vel_dof), LiR.reshape(-1, self.ltorso_net.config.nq, self.config.ang_vel_dof), Li
 
     def get_arm_nn_output(self, qtorso, qarm, arm_net, torso_arm_net):
-        LAi = arm_net(qarm)
-        LAi = self.vmap_get_L_from_output(LAi, arm_net.config)
+        Li = arm_net(qarm)
+        Li = self.vmap_get_L_from_output(Li, arm_net.config)
 
         output_lengths = [self.config.nq_arm * self.config.lin_vel_dof,
                           self.config.nq_arm * self.config.ang_vel_dof,
@@ -451,21 +450,21 @@ class FeLaNBranchSparsity(nn.Module):
 
         q_input = jnp.concatenate([qtorso,
                                      qarm], axis=1)
-        UAi, RAi, LTAi = split_by_lengths(torso_arm_net(q_input), 
+        LAiL, LAiR, LTAi = split_by_lengths(torso_arm_net(q_input), 
                                          output_lengths, 
                                          axis=1)
-        return UAi.reshape(-1, self.config.nq_arm, self.config.lin_vel_dof), RAi.reshape(-1, self.config.nq_arm, self.config.ang_vel_dof), LTAi.reshape(-1, self.config.nq_arm, self.config.nq_torso), LAi
+        return LAiL.reshape(-1, self.config.nq_arm, self.config.lin_vel_dof), LAiR.reshape(-1, self.config.nq_arm, self.config.ang_vel_dof), LTAi.reshape(-1, self.config.nq_arm, self.config.nq_torso), Li
 
     def get_leg_nn_output(self, qleg, leg_net):
         output_lengths = [leg_net.config.nq * self.config.lin_vel_dof,
                           leg_net.config.nq * self.config.ang_vel_dof,
                           leg_net.config.l_output_size]
 
-        ULi, RLi, LLi = split_by_lengths(leg_net(qleg), 
+        LiL, LiR, Li = split_by_lengths(leg_net(qleg), 
                                          output_lengths, 
                                          axis=1)
-        LLi = self.vmap_get_L_from_output(LLi, leg_net.config)
-        return ULi.reshape(-1, leg_net.config.nq, self.config.lin_vel_dof), RLi.reshape(-1, leg_net.config.nq, self.config.ang_vel_dof), LLi
+        Li = self.vmap_get_L_from_output(Li, leg_net.config)
+        return LiL.reshape(-1, leg_net.config.nq, self.config.lin_vel_dof), LiR.reshape(-1, leg_net.config.nq, self.config.ang_vel_dof), Li
 
     def get_inertia_matrix_humanoid(self, q_full, Wn):
         # q_full: base + actuated joints
@@ -481,50 +480,51 @@ class FeLaNBranchSparsity(nn.Module):
                                                                         self.config.nq_arm])
 
         # Neural Networks outputs
-        UL, UR, RR = self.get_base_nn_output(q)
-        UT, RT, LT = self.get_torso_nn_output(q_torso_arms)
-        UA0, RA0, LTA0, LA0 = self.get_arm_nn_output(qtorso, qarm_left, self.larm_left_net, self.ltorso_arm_left_net)
-        UA1, RA1, LTA1, LA1 = self.get_arm_nn_output(qtorso, qarm_right, self.larm_right_net, self.ltorso_arm_right_net)
-        UL0, RL0, LL0 = self.get_leg_nn_output(qleg_left, self.lleg_left_net)
-        UL1, RL1, LL1 = self.get_leg_nn_output(qleg_right, self.lleg_right_net)
+        LL, LRL, LR = self.get_base_nn_output(q)
+        # T, A0, ..., L1 correspond to the index i in LiL, LiR, and Li.
+        LTL, LTR, LT = self.get_torso_nn_output(q_torso_arms)
+        LA0L, LA0R, LTA0, LA0 = self.get_arm_nn_output(qtorso, qarm_left, self.larm_left_net, self.ltorso_arm_left_net)
+        LA1L, LA1R, LTA1, LA1 = self.get_arm_nn_output(qtorso, qarm_right, self.larm_right_net, self.ltorso_arm_right_net)
+        LL0L, LL0R, LL0 = self.get_leg_nn_output(qleg_left, self.lleg_left_net)
+        LL1L, LL1R, LL1 = self.get_leg_nn_output(qleg_right, self.lleg_right_net)
 
-        #### UR ####
-        USR = jnp.concatenate([
-            UT,
-            UA0,
-            UA1,
-            UL0,
-            UL1,
+        #### LR ####
+        K = jnp.concatenate([
+            LTL,
+            LA0L,
+            LA1L,
+            LL0L,
+            LL1L,
         ], axis=1)
 
-        RSR = jnp.concatenate([
-            RT,
-            RA0,
-            RA1,
-            RL0,
-            RL1,
+        W = jnp.concatenate([
+            LTR,
+            LA0R,
+            LA1R,
+            LL0R,
+            LL1R,
         ], axis=1)
 
-        #### US ####
-        US = jnp.concatenate([
-            UR,
-            USR,
+        #### U ####
+        U = jnp.concatenate([
+            LRL,
+            K,
         ], axis=1)
 
         ########### Build L ###########
-        n_batch = UL.shape[0]
+        n_batch = LL.shape[0]
 
         # Linear Velocity Column
         col_lin = jnp.concatenate([
-            UL,
-            US,
+            LL,
+            U,
         ], axis=1)
 
         # Angular Velocity Column
         col_ang = jnp.concatenate([
             jnp.zeros((n_batch, 3, 3)),
-            RR,
-            RSR,
+            LR,
+            W,
         ], axis=1)
 
         # Torso Column
@@ -587,51 +587,51 @@ class FeLaNBranchSparsity(nn.Module):
         qarm, qLF, qRF, qLH, qRH = split_by_lengths(q, [self.config.nq_arm, self.config.nq_leg, self.config.nq_leg, self.config.nq_leg, self.config.nq_leg])
 
         # Neural Networks outputs
-        UL, UR, RR = self.get_base_nn_output(q)
+        LL, LRL, LR = self.get_base_nn_output(q)
 
-        UA0, RA0, LA0 = self.get_leg_nn_output(qarm, self.larm_net)
-        UL0, RL0, LL0 = self.get_leg_nn_output(qLF, self.lleg_LF_net)
-        UL1, RL1, LL1 = self.get_leg_nn_output(qRF, self.lleg_RF_net)
-        UL2, RL2, LL2 = self.get_leg_nn_output(qLH, self.lleg_LH_net)
-        UL3, RL3, LL3 = self.get_leg_nn_output(qRH, self.lleg_RH_net)
+        LA0L, LA0R, LA0 = self.get_leg_nn_output(qarm, self.larm_net)
+        LL0L, LL0R, LL0 = self.get_leg_nn_output(qLF, self.lleg_LF_net)
+        LL1L, LL1R, LL1 = self.get_leg_nn_output(qRF, self.lleg_RF_net)
+        LL2L, LL2R, LL2 = self.get_leg_nn_output(qLH, self.lleg_LH_net)
+        LL3L, LL3R, LL3 = self.get_leg_nn_output(qRH, self.lleg_RH_net)
 
-        #### UR ####
-        USR = jnp.concatenate([
-            UA0,
-            UL0,
-            UL1,
-            UL2,
-            UL3,
+        #### LR ####
+        K = jnp.concatenate([
+            LA0L,
+            LL0L,
+            LL1L,
+            LL2L,
+            LL3L,
         ], axis=1)
 
-        RSR = jnp.concatenate([
-            RA0,
-            RL0,
-            RL1,
-            RL2,
-            RL3,
+        W = jnp.concatenate([
+            LA0R,
+            LL0R,
+            LL1R,
+            LL2R,
+            LL3R,
         ], axis=1)
 
-        #### US ####
-        US = jnp.concatenate([
-            UR,
-            USR,
+        #### U ####
+        U = jnp.concatenate([
+            LRL,
+            K,
         ], axis=1)
 
         ########### Build L ###########
-        n_batch = UL.shape[0]
+        n_batch = LL.shape[0]
 
         # Linear Velocity Column
         col_lin = jnp.concatenate([
-            UL,
-            US,
+            LL,
+            U,
         ], axis=1)
 
         # Angular Velocity Column
         col_ang = jnp.concatenate([
             jnp.zeros((n_batch, 3, 3)),
-            RR,
-            RSR,
+            LR,
+            W,
         ], axis=1)
 
         # Arm Column
@@ -699,54 +699,54 @@ class FeLaNBranchSparsity(nn.Module):
         qLF, qRF, qLH, qRH = split_by_lengths(q, [self.config.nq_leg, self.config.nq_leg, self.config.nq_leg, self.config.nq_leg])
 
         # Neural Networks outputs
-        UL, UR, RR = self.get_base_nn_output(q)
+        LL, LRL, LR = self.get_base_nn_output(q)
 
-        UL0, RL0, LL0 = self.get_leg_nn_output(qLF, self.lleg_LF_net)
-        UL1, RL1, LL1 = self.get_leg_nn_output(qRF, self.lleg_RF_net)
-        UL2, RL2, LL2 = self.get_leg_nn_output(qLH, self.lleg_LH_net)
-        UL3, RL3, LL3 = self.get_leg_nn_output(qRH, self.lleg_RH_net)
+        L0L, L0R, L0 = self.get_leg_nn_output(qLF, self.lleg_LF_net)
+        L1L, L1R, L1 = self.get_leg_nn_output(qRF, self.lleg_RF_net)
+        L2L, L2R, L2 = self.get_leg_nn_output(qLH, self.lleg_LH_net)
+        L3L, L3R, L3 = self.get_leg_nn_output(qRH, self.lleg_RH_net)
 
-        #### UR ####
-        USR = jnp.concatenate([
-            UL0,
-            UL1,
-            UL2,
-            UL3,
+        #### LR ####
+        K = jnp.concatenate([
+            L0L,
+            L1L,
+            L2L,
+            L3L,
         ], axis=1)
 
-        RSR = jnp.concatenate([
-            RL0,
-            RL1,
-            RL2,
-            RL3,
+        W = jnp.concatenate([
+            L0R,
+            L1R,
+            L2R,
+            L3R,
         ], axis=1)
 
-        #### US ####
-        US = jnp.concatenate([
-            UR,
-            USR,
+        #### U ####
+        U = jnp.concatenate([
+            LRL,
+            K,
         ], axis=1)
 
         ########### Build L ###########
-        n_batch = UL.shape[0]
+        n_batch = LL.shape[0]
 
         # Linear Velocity Column
         col_lin = jnp.concatenate([
-            UL,
-            US,
+            LL,
+            U,
         ], axis=1)
 
         # Angular Velocity Column
         col_ang = jnp.concatenate([
             jnp.zeros((n_batch, 3, 3)),
-            RR,
-            RSR,
+            LR,
+            W,
         ], axis=1)
 
         # Leg 0 Column
         col_l0 = jnp.concatenate([
             jnp.zeros((n_batch, 3 + self.config.ang_vel_dof, self.config.nq_leg)),
-            LL0,
+            L0,
             jnp.zeros((n_batch, 3*self.config.nq_leg, self.config.nq_leg)),
         ], axis=1)
 
@@ -754,7 +754,7 @@ class FeLaNBranchSparsity(nn.Module):
         col_l1 = jnp.concatenate([
             jnp.zeros((n_batch, 3 + self.config.ang_vel_dof, self.config.nq_leg)),
             jnp.zeros((n_batch, self.config.nq_leg, self.config.nq_leg)),
-            LL1,
+            L1,
             jnp.zeros((n_batch, 2*self.config.nq_leg, self.config.nq_leg)),
         ], axis=1)
 
@@ -762,7 +762,7 @@ class FeLaNBranchSparsity(nn.Module):
         col_l2 = jnp.concatenate([
             jnp.zeros((n_batch, 3 + self.config.ang_vel_dof, self.config.nq_leg)),
             jnp.zeros((n_batch, 2*self.config.nq_leg, self.config.nq_leg)),
-            LL2,
+            L2,
             jnp.zeros((n_batch, self.config.nq_leg, self.config.nq_leg)),
         ], axis=1)
 
@@ -770,7 +770,7 @@ class FeLaNBranchSparsity(nn.Module):
         col_l3 = jnp.concatenate([
             jnp.zeros((n_batch, 3 + self.config.ang_vel_dof, self.config.nq_leg)),
             jnp.zeros((n_batch, 3*self.config.nq_leg, self.config.nq_leg)),
-            LL3,
+            L3,
         ], axis=1)
 
         # === Final L matrix ===
@@ -856,14 +856,13 @@ class FeLaNBranchSparsity(nn.Module):
 
         return gen_force
 
-    def kinetic_energy(self, qd: jnp.ndarray, M) -> jnp.ndarray:
-        T = 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), M @ qd).squeeze(-1)
-        return T
+    def kinetic_energy(self, qd: jnp.ndarray, H) -> jnp.ndarray:
+        return 0.5 * jnp.matmul(jnp.transpose(qd, (0, 2, 1)), H @ qd).squeeze(-1)
     
     def potential_energy(self, rb, rot_base_to_world, mass_value, prod_mass_r):
         total_value = mass_value * rb[..., None] + rot_base_to_world @ prod_mass_r
-        V = jnp.dot(self.gravity_array13, total_value)
-        return jnp.squeeze(V, axis=-1)
+        P = jnp.dot(self.gravity_array13, total_value)
+        return jnp.squeeze(P, axis=-1)
     
     def lagrangian_euler_rates_vb_fn(self, q_full, qd_full):
         
