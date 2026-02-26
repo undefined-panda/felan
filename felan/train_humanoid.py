@@ -120,7 +120,7 @@ if __name__ == "__main__":
         dataset_name_short = 'talos_real_freq_100hz'
 
     model_folder = str(robot_prefix) + '/' + nn_id
-    dataset_name_full = repo_dir + '/data/datasets/' + dataset_name + '.pkl'
+    dataset_full_path = repo_dir + '/data/datasets/' + dataset_name + '.pkl'
 
     test_labels = [0.1] # 10 % of all the environments
     if robot_prefix == 'talos':
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         test_labels = ['env_0_run_10', 'env_0_run_20']
 
 
-    train_data, test_data, divider, dt_mean = load_dataset(filename=dataset_name_full, test_label=test_labels,
+    train_data, test_data, divider, dt_mean = load_dataset(filename=dataset_full_path, test_label=test_labels,
                                                            sample_offset=sample_offset, final_sample_offset=final_sample_offset,
                                                            dataset_use=dataset_use, nq_dof=nq_dof_full, nv_dof=nv_dof_full, tau_field=tau_field)
 
@@ -202,6 +202,8 @@ if __name__ == "__main__":
              'dnea_inertia_epsilon': 1e-4,
              'dnea_mass_epsilon': 1e-2,
              # Robot
+             'nq_dof': nq_dof_full,
+             'nv_dof': nv_dof_full,
              'n_dof_torso': 2,
              'n_arms': 2,
              'n_dof_arm': 4,
@@ -212,8 +214,13 @@ if __name__ == "__main__":
              'xml_path': xml_path,
              # MJX
              'dyn_parametrization': dyn_parametrization,
+             # Data
+             'dataset_path': dataset_full_path,
+             'tau_field': tau_field,
+             'train_labels': train_labels,
+             'test_labels': test_labels,
              #
-             'max_epoch': 3000
+             'max_epoch': 3000,
             }
 
     if flag_normalize_tau:
@@ -254,7 +261,7 @@ if __name__ == "__main__":
 
     if load_model:
         ################# Load Model #################
-        eval_params = load_model_fn(model_name, folder_path)
+        eval_params, _ = load_model_fn(model_name, folder_path)
 
     else:
         ################# Train Model #################
@@ -311,7 +318,7 @@ if __name__ == "__main__":
 
         # Save the Model:
         if save_model:
-            save_model_fn(train_model_state.params, model_name, folder_path)
+            save_model_fn(train_model_state.params, hyper, model_name, folder_path)
 
 
     ################# Evaluate Model #################

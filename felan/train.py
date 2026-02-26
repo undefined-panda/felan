@@ -13,18 +13,23 @@ import jax.numpy as jnp
 from flax.training import checkpoints
 from flax.traverse_util import flatten_dict
 
-def save_model_fn(params, model_name, folder_path):
+def save_model_fn(params, hyper, model_name, folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         print("Folder created!")
 
     print(f'Saving model: {model_name}')
     with open(f"{folder_path}/{model_name}" + ".pkl", "wb") as f:
-        pickle.dump(params, f)
+        save_dict = {
+            "params": params,
+            "hyper": hyper,
+        }
+        pickle.dump(save_dict, f)
 
 def load_model_fn(model_name, folder_path):
     with open(f"{folder_path}/{model_name}" + ".pkl", "rb") as f:
-        return pickle.load(f)
+        model_data = pickle.load(f)
+        return model_data["params"], model_data["hyper"]
 
 @struct.dataclass(frozen=True)
 class TrainConfig:
