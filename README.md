@@ -1,10 +1,13 @@
 # FeLaN
-Open-source implementation in jax of **Floating-Base Deep Lagrangian Networks (FeLaN)**.
+Open-source code of **Floating-Base Deep Lagrangian Networks (FeLaN)**.
 
 ## Overview
 FeLaN is a grey-box method for physically consistent system identification (SysID) of floating-base robots (e.g., humanoids, quadrupeds). It learns systems dynamics under Lagrangian mechanics while enforcing key structural constraints of floating-base systems (e.g., branch-induced sparsity/decoupling and full physical consistency of the composite spatial inertia) through a novel inertia matrix parametrization.
 
-**Links:** [[Project page](https://schulze18.github.io/felan_website/)] · [[Preprint](https://arxiv.org/abs/2510.17270)]
+<div align="center">
+  <a href="https://schulze18.github.io/felan_website/"><b>Project Page</b></a> |
+  <a href="https://arxiv.org/abs/2510.17270"><b>Preprint</b></a>
+</div>
 
 ## What’s in this repository
 

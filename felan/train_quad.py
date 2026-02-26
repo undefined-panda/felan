@@ -237,7 +237,7 @@ if __name__ == "__main__":
              'train_labels': train_labels,
              'test_labels': test_labels,
              #
-             'max_epoch': 3000
+             'max_epoch': 2000
             }
 
     if flag_normalize_tau:
