@@ -120,7 +120,8 @@ if __name__ == "__main__":
         dataset_name_short = 'talos_real_freq_100hz'
 
     model_folder = str(robot_prefix) + '/' + nn_id
-    dataset_full_path = repo_dir + '/data/datasets/' + dataset_name + '.pkl'
+    dataset_path = 'data/datasets/' + dataset_name + '.pkl'
+    dataset_full_path = repo_dir + '/' + dataset_path
 
     test_labels = [0.1] # 10 % of all the environments
     if robot_prefix == 'talos':
@@ -215,7 +216,7 @@ if __name__ == "__main__":
              # MJX
              'dyn_parametrization': dyn_parametrization,
              # Data
-             'dataset_path': dataset_full_path,
+             'dataset_path': dataset_path,
              'tau_field': tau_field,
              'train_labels': train_labels,
              'test_labels': test_labels,

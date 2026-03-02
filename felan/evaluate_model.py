@@ -56,13 +56,13 @@ if __name__ == "__main__":
     folder_path = repo_dir + f"/{model_folder}/{robot_prefix}/{nn_id}"
     eval_params, hyper = load_model_fn(model_name, folder_path)
 
-
     # Get Hyperparameters
     nq_dof = hyper['nq_dof']
     nv_dof = hyper['nv_dof']
-    dataset_full_path = hyper['dataset_path']
+    dataset_full_path = repo_dir + '/' + hyper['dataset_path']
     test_labels = hyper['test_labels']
     tau_field = hyper['tau_field']
+    hyper['xml_path'] = repo_dir + '/' + hyper['xml_path']
 
     sample_offset = 10
     final_sample_offset = 10
@@ -130,4 +130,8 @@ if __name__ == "__main__":
 
 
     ################# Plot Results #################
-    plot_components(eval_results, eval_dataset, test_labels, divider, model_folder, model_name, render, force_index=[0, 1, 2], repo_dir=repo_dir)
+    if robot_prefix in ['talos', 'go2']:
+        # Plot components only for simulated data when ground truth is available
+        plot_components(eval_results, eval_dataset, test_labels, divider, model_folder, model_name, render, force_index=[0, 1, 2], repo_dir=repo_dir)
+    else:
+        plot_torques(eval_results, eval_dataset, test_labels, divider, model_folder, model_name, render, force_index=[0, 1, 2], repo_dir=repo_dir)

@@ -388,8 +388,7 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         # fig.canvas.manage.set_window_title('Seed = {0}'.format(seed))
 
         legend = [mp.patches.Patch(color=color_i[0], label="Model"),
-                mp.patches.Patch(color="k", label="Ground Truth"),
-                mp.patches.Patch(color="orange", label="Nominal")]
+                mp.patches.Patch(color="k", label="Measured")]
 
         # Plot Torque
         ax0 = fig.add_subplot(2, 1, 1)
@@ -427,7 +426,7 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
 
         ax0.legend(handles=legend, bbox_to_anchor=(0.0, 1.0), loc='upper left', ncol=1, framealpha=1.)
 
-        # Plot Ground Truth Torque:
+        # Plot Measured Torque:
         ax0.plot(test_tau[:, i+0], color="k")
         if i+1 < n_dof:
             ax1.plot(test_tau[:, i+1], color="k")
@@ -436,11 +435,6 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         ax0.plot(eval_tau[:, i+0], color=color_i[0], alpha=plot_alpha)
         if i+1 < n_dof:
             ax1.plot(eval_tau[:, i+1], color=color_i[0], alpha=plot_alpha)
-
-        # Plot Nominal Model Torque:
-        ax0.plot(nom_model_tau[:, i+0], color="orange", alpha=plot_alpha)
-        if i+1 < n_dof:
-            ax1.plot(nom_model_tau[:, i+1], color="orange", alpha=plot_alpha)
 
         fig_dir = repo_dir + f"/figures/{model_type_folder}/{model_name}"
         if not os.path.isdir(fig_dir):

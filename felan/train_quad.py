@@ -59,10 +59,12 @@ if __name__ == "__main__":
         n_arms = 1
         nq_arm = 7
         xml_path = repo_dir + '/data/robot_models/boston_dynamics_spot/spot_arm_full.xml'
+        xml_path = 'data/robot_models/boston_dynamics_spot/spot_arm_full.xml'
     else:
         n_arms = 0
         nq_arm = 0
         xml_path = repo_dir + '/data/robot_models/go2/go2.xml'
+        xml_path = 'data/robot_models/go2/go2.xml'
 
     if nn_id == 'FeLaN':
         nn_type = FeLaN
@@ -133,7 +135,8 @@ if __name__ == "__main__":
 
 
     model_folder = str(robot_prefix) + '/' + nn_id
-    dataset_full_path = repo_dir + '/data/datasets/' + dataset_name + '.pkl'
+    dataset_path = 'data/datasets/' + dataset_name + '.pkl'
+    dataset_full_path = repo_dir + '/' + dataset_path
 
     test_labels = [0.1] # 10 % of all the environments
     if robot_prefix == 'go2':
@@ -232,7 +235,7 @@ if __name__ == "__main__":
              # MJX
              'dyn_parametrization': dyn_parametrization,
              # Data
-             'dataset_path': dataset_full_path,
+             'dataset_path': dataset_path,
              'tau_field': tau_field,
              'train_labels': train_labels,
              'test_labels': test_labels,

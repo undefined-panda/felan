@@ -166,14 +166,16 @@ class MjxDNEAConfig:
     dyn_param: str = 'PrincipalTriangular'
 
 def get_config_from_dict(kwargs):
-    default_xml_path = Path(__file__).parent.parent.parent.parent / 'data' / 'robot_models' / 'go2' / 'go2.xml'
+    xml_path = kwargs.get('xml_path', 'data/robot_models/go2/go2.xml')
+    repo_dir = Path(__file__).parent.parent
+    xml_full_path = repo_dir / xml_path
 
     lrot_tril_indices_3 = jnp.tril_indices(3)
     lrot_output_size = int((3 ** 2 + 3) / 2)
     lrot_idx_3 = get_idx_triangular(3, lrot_output_size)
 
     config = MjxDNEAConfig(
-                        xml_path=kwargs.get('xml_path', str(default_xml_path.resolve())),
+                        xml_path=str(xml_full_path.resolve()),
                         epsilon=kwargs.get('diagonal_epsilon', 1e-5),
                         inertia_epsilon=kwargs.get('dnea_inertia_epsilon', 1e-4),
                         mass_epsilon=kwargs.get('dnea_mass_epsilon', 1e-2),
