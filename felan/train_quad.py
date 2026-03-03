@@ -256,12 +256,6 @@ if __name__ == "__main__":
 
     if nn_id == 'MjxDNEA':
         model_name += '_' + hyper['dyn_parametrization']
-    if nn_id == 'FeLaN' and hyper['tri_ineq']:
-        model_name += '_tri_ineq'
-    if nn_id == 'FeLaN' and hyper['mass_ineq']:
-        model_name += '_mass_ineq'
-    if nn_id == 'FeLaN' and hyper['skew_sym_ineq']:
-        model_name += '_skew_sym_ineq'
 
     model_name += '_' + str(seed)
 
