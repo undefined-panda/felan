@@ -630,7 +630,7 @@ class FeLaN(nn.Module):
 
         return LL_input, mass, U_prod_eig
 
-    def get_inertia_matrix_humanoid(self, q_full, Wn):
+    def get_inertia_matrix_humanoid(self, q_full):
         n_batch = q_full.shape[0]
 
         # q_full: base + actuated joints
@@ -792,7 +792,7 @@ class FeLaN(nn.Module):
         }
         return H, mass, extras
 
-    def get_inertia_matrix_quad_with_arm(self, q_full, Wn):
+    def get_inertia_matrix_quad_with_arm(self, q_full):
         n_batch = q_full.shape[0]
         # q_full: base + actuated joints
         # q_base: base
@@ -954,7 +954,7 @@ class FeLaN(nn.Module):
 
         return H, mass, extras
 
-    def get_inertia_matrix_quad(self, q_full, Wn):
+    def get_inertia_matrix_quad(self, q_full):
         n_batch = q_full.shape[0]
         # q_full: base + actuated joints
         # q_base: base
@@ -1178,7 +1178,7 @@ class FeLaN(nn.Module):
         Wn = self.omega_to_euler_rate_mat(q_full[:,3:6])
         Wn_inv = self.euler_rate_to_omega_mat(q_full[:,3:6])
 
-        inertia_mat_raw, mass, extras = self.get_inertia_matrix(q_full, Wn)
+        inertia_mat_raw, mass, extras = self.get_inertia_matrix(q_full)
 
         inertia_mat = self.convet_inertia_to_vw_euler_rate(q_full, inertia_mat_raw, rot_base_to_world, Wn_inv)
     

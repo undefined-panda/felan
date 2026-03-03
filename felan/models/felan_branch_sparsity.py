@@ -466,7 +466,7 @@ class FeLaNBranchSparsity(nn.Module):
         Li = self.vmap_get_L_from_output(Li, leg_net.config)
         return LiL.reshape(-1, leg_net.config.nq, self.config.lin_vel_dof), LiR.reshape(-1, leg_net.config.nq, self.config.ang_vel_dof), Li
 
-    def get_inertia_matrix_humanoid(self, q_full, Wn):
+    def get_inertia_matrix_humanoid(self, q_full):
         # q_full: base + actuated joints
         # q_base: base
         # q: actuated joints
@@ -579,7 +579,7 @@ class FeLaNBranchSparsity(nn.Module):
         mass = jnp.trace(H[:,:3,:3], axis1=1, axis2=2) / 3.0
         return H, mass
     
-    def get_inertia_matrix_quad_with_arm(self, q_full, Wn):
+    def get_inertia_matrix_quad_with_arm(self, q_full):
         # q_full: base + actuated joints
         # q_base: base
         # q: actuated joints
@@ -691,7 +691,7 @@ class FeLaNBranchSparsity(nn.Module):
         mass = jnp.trace(H[:,:3,:3], axis1=1, axis2=2) / 3.0
         return H, mass
 
-    def get_inertia_matrix_quad(self, q_full, Wn):
+    def get_inertia_matrix_quad(self, q_full):
         # q_full: base + actuated joints
         # q_base: base
         # q: actuated joints
@@ -867,10 +867,9 @@ class FeLaNBranchSparsity(nn.Module):
     def lagrangian_euler_rates_vb_fn(self, q_full, qd_full):
         
         rot_base_to_world = get_rot_base_to_world(q_full[:,3:6])
-        Wn = self.omega_to_euler_rate_mat(q_full[:,3:6])
         Wn_inv = self.euler_rate_to_omega_mat(q_full[:,3:6])
 
-        inertia_mat_raw, mass = self.get_inertia_matrix(q_full, Wn)
+        inertia_mat_raw, mass = self.get_inertia_matrix(q_full)
 
         inertia_mat = self.convet_inertia_to_vw_euler_rate(q_full, inertia_mat_raw, rot_base_to_world, Wn_inv)
 

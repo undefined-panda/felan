@@ -175,7 +175,7 @@ class DeLaNPotParam(nn.Module):
 
  
     
-    def get_inertia_matrix(self, q_full, Wn):
+    def get_inertia_matrix(self, q_full):
         # q_full: base + actuated joints
         # q_base: base
         # q: actuated joints
@@ -267,10 +267,9 @@ class DeLaNPotParam(nn.Module):
     def lagrangian_euler_rates_vb_fn(self, q_full, qd_full):
         
         rot_base_to_world = get_rot_base_to_world(q_full[:,3:6])
-        Wn = self.omega_to_euler_rate_mat(q_full[:,3:6])
         Wn_inv = self.euler_rate_to_omega_mat(q_full[:,3:6])
 
-        inertia_mat_raw, mass = self.get_inertia_matrix(q_full, Wn)
+        inertia_mat_raw, mass = self.get_inertia_matrix(q_full)
 
         inertia_mat = self.convert_inertia_to_vw_euler_rate(q_full, inertia_mat_raw, rot_base_to_world, Wn_inv)
 
