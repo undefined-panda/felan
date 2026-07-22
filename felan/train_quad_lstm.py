@@ -95,6 +95,35 @@ def compute_residual_from_pkl(dataset_full_path, test_labels):
     return (train_labels, train_q, train_qd, train_tau,
             test_labels_out, test_q, test_qd, test_tau)
 
+def compute_residual_from_npz(dataset_full_path, train_size=0.75):
+    """Read raw .npz file and compute residual torque.
+    """
+    data = np.load(dataset_full_path)
+    
+    num_datasets = data["time"].shape[0]
+    test_run_indices = np.random.choice(np.arange(num_datasets), int(num_datasets * (1-train_size)), replace=False)
+
+    joint_pos = data["joint_pos"]
+    joint_vel = data["joint_vel"]
+    residual_torque = (data["diff_tau_m_nom"] + data["diff_tau_c_nom"] + data["diff_tau_g_nom"])[..., :6]
+
+    n_runs = joint_pos.shape[0]
+    run_labels = [f'run_{i}' for i in range(n_runs)]
+
+    # Train/Test-Split anhand Run-Indizes
+    test_mask  = np.array([i in test_run_indices for i in range(n_runs)])
+    train_mask = ~test_mask
+
+    train_q,   test_q   = joint_pos[train_mask], joint_pos[test_mask]
+    train_qd,  test_qd  = joint_vel[train_mask], joint_vel[test_mask]
+    train_tau, test_tau = residual_torque[train_mask],   residual_torque[test_mask]
+
+    train_labels = [run_labels[i] for i in range(n_runs) if train_mask[i]]
+    test_labels  = [run_labels[i] for i in range(n_runs) if test_mask[i]]
+
+    return (train_labels, train_q, train_qd, train_tau,
+            test_labels,  test_q,  test_qd,  test_tau)
+
 
 def concatenate_runs(q_runs, qd_runs, tau_runs):
     """(n_runs, T, D) -> (N, D) + divider-Array mit Run-Grenzen."""
@@ -323,11 +352,14 @@ if __name__ == "__main__":
     parser.add_argument("-l", nargs=1, type=int, default=[0])
     parser.add_argument("-m", nargs=1, type=int, default=[1])
     parser.add_argument("--robot", type=str, default="go2",
-                        choices=["go2", "spot_real", "hyqreal2", "spot_arm_real"])
+                        choices=["go2", "spot_real", "hyqreal2", "spot_arm_real", "aliengo"])
+    parser.add_argument("--file_type", type=str, default="pkl",
+                        choices=["npz", "pkl"])
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(args)
 
     robot_prefix = args.robot
+    file_type = "."+args.file_type
     nn_id = "LSTM"
 
     # ------------------ Robot / Dataset ------------------
@@ -343,22 +375,31 @@ if __name__ == "__main__":
         'spot_real':    'spot_real_freq_100hz',
         'spot_arm_real':'spot_arm_real_freq_100hz',
         'hyqreal2':     'hyqreal2_real_freq_100hz',
+        'aliengo':      'quad_mass_dataset_run6'
     }
     dataset_name = dataset_map[robot_prefix]
-    dataset_full_path = os.path.join(repo_dir, 'data', 'datasets', dataset_name + '.pkl')
+    dataset_full_path = os.path.join(repo_dir, 'data', 'datasets', dataset_name + file_type)
 
     test_labels_wanted = {
         'go2':           ['env_0_run_2', 'env_0_run_10', 'env_0_run_11', 'env_0_run_28', 'env_0_run_41'],
         'spot_real':     ['env_0_run_32', 'env_0_run_52'],
         'spot_arm_real': ['env_0_run_60', 'env_0_run_71'],
         'hyqreal2':      ['env_0_run_2', 'env_0_run_5', 'env_0_run_25'],
+        'aliengo':       []
     }[robot_prefix]
 
     # ------------------ Daten laden + Residuum berechnen ------------------
     print("Loading dataset ...")
-    (train_labels, train_q, train_qd, train_tau,
-     test_labels, test_q, test_qd, test_tau) = compute_residual_from_pkl(
-        dataset_full_path, test_labels_wanted)
+    if file_type.split(".")[-1] == "pkl":
+        (train_labels, train_q, train_qd, train_tau,
+        test_labels, test_q, test_qd, test_tau) = compute_residual_from_pkl(
+            dataset_full_path, test_labels_wanted)
+
+    elif file_type.split(".")[-1] == "npz":
+        (train_labels, train_q, train_qd, train_tau,
+            test_labels, test_q, test_qd, test_tau) = compute_residual_from_npz(dataset_full_path)
+    else:
+        raise ValueError(f"Unsupported file type: {file_type}")
 
     print(f"  # train runs: {len(train_labels)}")
     print(f"  # test runs:  {len(test_labels)}")
@@ -411,7 +452,7 @@ if __name__ == "__main__":
     lstm_cfg = get_lstm_config(hyper)
     model = LSTMBlackBox(n_dof=nq, config=lstm_cfg)   # n_dof nur der Kompatibilität wegen
 
-    dummy = jnp.zeros((4, time_window, 3 * nq))
+    dummy = jnp.zeros((4, time_window, 30))
     rng, param_rng = jax.random.split(rng)
     params = model.init(param_rng, dummy)
     print(f"  # model params: {count_parameters(params)}")

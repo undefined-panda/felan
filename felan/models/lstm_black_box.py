@@ -77,6 +77,7 @@ class LSTMBlackBox(nn.Module):
 
     n_dof: int                      # Kompatibilität mit den anderen Modellen (nv_dof_model)
     config: LSTMBlackBoxConfig
+    z_dim: int
 
     @nn.compact
     def __call__(self, x_seq, training: bool = False):
@@ -109,7 +110,7 @@ class LSTMBlackBox(nn.Module):
         # Head auf letztem Zeitschritt
         h_last = h[:, -1]
         tau_pred = nn.Dense(
-            features=cfg.n_output,
+            features=self.z_dim,
             kernel_init=nn.initializers.xavier_uniform(),
             bias_init=nn.initializers.zeros,
             name="head",
