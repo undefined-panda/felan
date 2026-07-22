@@ -16,3 +16,6 @@ datasets/
 figures/
 tensorboard/
 trained_models/
+
+data
+*.json
