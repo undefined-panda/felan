@@ -373,7 +373,7 @@ if __name__ == "__main__":
         'spot_real':    'spot_real_freq_100hz',
         'spot_arm_real':'spot_arm_real_freq_100hz',
         'hyqreal2':     'hyqreal2_real_freq_100hz',
-        'aliengo':      'quad_mass_dataset_run5'
+        'aliengo':      'quad_mass_dataset_run6'
     }
     dataset_name = dataset_map[robot_prefix]
     dataset_full_path = os.path.join(repo_dir, 'data', 'datasets', dataset_name + file_type)
