@@ -272,11 +272,11 @@ def evaluate_lstm(state, q_flat, qd_flat, tau_flat, divider, time_window, norm_t
 def plot_lstm_torques(y_true, y_pred, eval_divider, test_labels,
                       model_folder, model_name, repo_dir,
                       render=True, combined=False):
-    """Vergleich Ground-Truth vs Prediction pro Gelenk.
+    """Compare torque prediction of LSTM with ground truth
 
     Args:
-        combined: False -> pro Gelenkpaar eine eigene Figure (wie bisher).
-                  True  -> alle Gelenke in einer einzigen Figure (Grid-Layout).
+        combined: False -> plot for each joint
+                  True  -> all joints in one plot
     """
     n_dof = y_true.shape[-1]
     ticks = (eval_divider[:-1] + eval_divider[1:]) / 2
@@ -336,6 +336,21 @@ def plot_lstm_torques(y_true, y_pred, eval_divider, test_labels,
     if render:
         plt.show()
 
+def plot_train_loss(losses, title="Training Loss", save_path=None):
+    epochs = range(1, len(losses) + 1)
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, losses, linestyle="-", linewidth=0.8, color="tab:blue", label="Loss")
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(True, which="both", alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+    plt.show()
 
 # ---------------------------------------------------------------------------
 # Main
@@ -417,8 +432,8 @@ if __name__ == "__main__":
 
     # ------------------ Hyperparameter ------------------
     hyper = {
-        'lstm_hidden_size': 64,
-        'lstm_num_layers':  2,
+        'lstm_hidden_size': 10,
+        'lstm_num_layers':  5,
         'lstm_dropout':     0.0,
         'time_window':      20,
         'batch_size':       256,
@@ -472,7 +487,7 @@ if __name__ == "__main__":
         tb_writer = SummaryWriter(log_dir=tb_folder)
         print("\n### Training LSTM ###")
         rng, train_rng = jax.random.split(rng)
-        state, _ = train_lstm(
+        state, losses = train_lstm(
             state, train_q_flat, train_qd_flat, train_tau_flat,
             valid_starts_train, norm_tau, train_rng,
             time_window, batch_size, hyper['max_epoch'],
@@ -491,6 +506,8 @@ if __name__ == "__main__":
 
     # ------------------ Plot ------------------
     print("\n### Plotting ###")
+    plot_train_loss(losses, save_path="train_loss.png")
+
     plot_lstm_torques(y_true, y_pred, eval_div, test_labels,
                       model_folder, model_name, repo_dir, render=render,
                       combined=True)
