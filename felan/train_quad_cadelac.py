@@ -1,0 +1,492 @@
+import os
+import argparse
+import jax
+jax.config.update("jax_default_matmul_precision", "highest")
+import jax.numpy as jnp
+
+import optax
+from flax.training import train_state
+
+import copy
+import matplotlib as mp
+from functools import partial
+from jax import random
+
+if os.getenv("DISPLAY"):
+    try:
+        mp.use("Qt5Agg")
+        mp.rc('text', usetex=True)
+        mp.rcParams['text.latex.preamble'] = r'\usepackage{amsmath}'
+
+    except ImportError:
+        pass
+repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+from tensorboardX import SummaryWriter
+from felan.data_scripts.jax_utils import init_env
+from felan.models.np_math_utils import *
+
+from felan.train import *
+from felan.eval import *
+from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_cadelac_pp_config
+
+def load_custom_dataset(dataset_full_path, train_size=0.75, seed=None):
+    data = np.load(dataset_full_path)
+
+    q_full = np.concatenate([data['base_pos'], data['base_orient'], data['joint_pos']], axis=-1)
+    qd_full = np.concatenate([data['base_vel'], data['base_ang_vel'], data['joint_vel']], axis=-1)
+    qdd_full = np.concatenate([data['base_acc']], axis=-1)
+
+    residual_torque = (data['diff_tau_m_nom'] + data['diff_tau_c_nom'] + data['diff_tau_g_nom'])[..., :6]
+
+    n_runs = q_full.shape[0]
+    run_labels = [f'run_{i}' for i in range(n_runs)]
+
+    rng = np.random.default_rng(seed)
+    n_test = int(n_runs * (1 - train_size))
+    test_run_indices = rng.choice(np.arange(n_runs), n_test, replace=False)
+
+    test_mask  = np.zeros(n_runs, dtype=bool)
+    test_mask[test_run_indices] = True
+    train_mask = ~test_mask
+
+    train_q, test_q = q_full[train_mask], q_full[test_mask]
+    train_qd, test_qd = qd_full[train_mask], qd_full[test_mask]
+    train_qdd, test_qdd = qdd_full[train_mask], qdd_full[test_mask]
+    train_tau, test_tau = residual_torque[train_mask], residual_torque[test_mask]
+
+    test_m = data['tau_m'][test_mask][..., :6]
+    test_c = data['tau_c'][test_mask][..., :6]
+    test_g = data['tau_g'][test_mask][..., :6]
+
+    train_labels = [run_labels[i] for i in range(n_runs) if train_mask[i]]
+    test_labels = [run_labels[i] for i in range(n_runs) if test_mask[i]]
+
+    def flatten(arr):
+        return arr.reshape(-1, arr.shape[-1])
+
+    train_q = flatten(train_q)
+    train_qd = flatten(train_qd)
+    train_qdd = flatten(train_qdd)
+    train_tau = flatten(train_tau)
+    test_q = flatten(test_q)
+    test_qd = flatten(test_qd)
+    test_qdd = flatten(test_qdd)
+    test_tau = flatten(test_tau)
+    test_m = flatten(test_m)
+    test_c = flatten(test_c)
+    test_g = flatten(test_g)
+
+    train_data = (train_labels, train_q, train_qd, train_qdd, train_tau)
+    test_data = (test_labels, test_q, test_qd, test_qdd, test_tau, test_m, test_c, test_g)
+
+    T = data['joint_pos'].shape[1]
+    n_test  = int(test_mask.sum())
+    divider = list(np.arange(n_test + 1) * T)
+
+    return train_data, test_data, divider
+
+def create_lstm_history(train_q, train_qd, train_tau, time_window, divider):
+    q = np.asarray(train_q)
+    qd = np.asarray(train_qd)
+    tau = np.asarray(train_tau)
+
+    joint_pos = q[:, -12:]
+    joint_vel = qd[:, -12:]
+    joint_tau = tau[:, :6]
+
+    D_hist = 12 + 12 + 6
+
+    valid_idx = []
+    for i in range(len(divider) - 1):
+        run_start, run_end = int(divider[i]), int(divider[i + 1])
+        for t in range(run_start + time_window, run_end):
+            valid_idx.append(t)
+    valid_idx = np.asarray(valid_idx, dtype=np.int64)
+
+    n_valid = len(valid_idx)
+
+    print(f"  create_lstm_history: {n_valid} valid samples "
+          f"(from {q.shape[0]} total, {q.shape[0] - n_valid} dropped "
+          f"because of time_window={time_window})")
+
+    history = np.zeros((n_valid, time_window, D_hist), dtype=np.float32)
+    for i, t in enumerate(valid_idx):
+        q_win = joint_pos[t - time_window:t]
+        qd_win = joint_vel[t - time_window:t]
+        tau_win = joint_tau[t - time_window:t]
+        history[i] = np.concatenate([q_win, qd_win, tau_win], axis=-1)
+
+    return jnp.asarray(history), valid_idx
+
+def loss_fn_cadelac(state, params, batch_data, config: TrainConfig):
+    q, qd, qdd, tau, history = batch_data
+    tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd, history)
+
+    err_inv = jnp.sum((tau_hat - tau) ** 2 / config.norm_tau, axis=1)
+    l_mean_inv_dyn = jnp.mean(err_inv)
+    l_var_inv_dyn = jnp.var(err_inv)
+    l_mean_squared_inv_dyn = jnp.mean(err_inv ** 2)
+
+    dEdt = jnp.sum(qd * tau, axis=1)
+    err_dEdt = (dEdt_hat - dEdt) ** 2
+    l_mean_dEdt = jnp.mean(err_dEdt)
+    l_mean_squared_dEdt = jnp.mean(err_dEdt ** 2)
+    l_var_dEdt = jnp.var(err_dEdt)
+
+    loss = l_mean_inv_dyn + (l_mean_dEdt if config.loss_power else 0.0)
+
+    metrics = {
+        'l_mean_inv_dyn': l_mean_inv_dyn,
+        'l_var_inv_dyn': l_var_inv_dyn,
+        'l_mean_squared_inv_dyn': l_mean_squared_inv_dyn,
+        'l_mean_dEdt': l_mean_dEdt,
+        'l_var_dEdt': l_var_dEdt,
+        'l_mean_squared_dEdt': l_mean_squared_dEdt,
+    }
+
+    if config.hyper.get('penalize_extra', False):
+        diff_mass = extras['diff_mass']
+        l_mean_mass = jnp.mean(diff_mass)
+        l_var_mass = jnp.var(diff_mass)
+        loss += config.hyper['penalize_diff_mass'] * l_mean_mass
+        metrics.update({'l_mean_mass': l_mean_mass, 'l_var_mass': l_var_mass})
+
+        diff_rot_eigenvalue = extras['diff_rot_eigenvalue']
+        err_rot_eigenvalue = diff_rot_eigenvalue ** 2
+        l_mean_rot_eigenvalue = jnp.mean(err_rot_eigenvalue)
+        l_var_rot_eigenvalue = jnp.var(err_rot_eigenvalue)
+        loss += config.hyper['penalize_rot_eigenvalue'] * l_mean_rot_eigenvalue
+        metrics.update({
+            'l_mean_rot_eigenvalue': l_mean_rot_eigenvalue,
+            'l_var_rot_eigenvalue': l_var_rot_eigenvalue,
+        })
+
+    for key, value in extras.items():
+        metrics[f"{key}_mean"] = jnp.mean(value)
+        metrics[f"{key}_var"] = jnp.var(value)
+        metrics[f"{key}_max"] = jnp.max(value)
+
+    return loss, metrics
+
+if __name__ == "__main__":
+
+    # Read Command Line Arguments:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", nargs=1, type=int, required=False, default=[True, ], help="Training using CUDA.")
+    parser.add_argument("-i", nargs=1, type=int, required=False, default=[0, ], help="Set the CUDA id.")
+    parser.add_argument("-s", nargs=1, type=int, required=False, default=[0, ], help="Set the random seed")
+    parser.add_argument("-r", nargs=1, type=int, required=False, default=[1, ], help="Render the figure")
+    parser.add_argument("-l", nargs=1, type=int, required=False, default=[0, ], help="Load the model")
+    parser.add_argument("-m", nargs=1, type=int, required=False, default=[1, ], help="Save the model")
+    parser.add_argument("--robot", type=str, default="go2", choices=["go2", "spot_real", "hyqreal2", "spot_arm_real", "aliengo"])
+    parser.add_argument("--inertia-param", type=str, default="PrincipalTriangular", choices=["PrincipalTriangular", "PrincipalUnconstrained", "SpatialCov", "SpatialSpd", "SpatialLogCholesky"], help="Inertia parametrization",)
+    parser.add_argument("--file_type", type=str, default="pkl", choices=["npz", "pkl"])
+
+    args = parser.parse_args()
+    seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
+
+    robot_prefix = args.robot
+    nn_id = "CaDeLaC"
+    file_type = "."+args.file_type
+    dyn_parametrization = args.inertia_param
+
+    if 'arm' in robot_prefix:
+        n_arms = 1
+        nq_arm = 7
+        xml_path = repo_dir + '/data/robot_models/boston_dynamics_spot/spot_arm_full.xml'
+        xml_path = 'data/robot_models/boston_dynamics_spot/spot_arm_full.xml'
+    else:
+        n_arms = 0
+        nq_arm = 0
+        xml_path = repo_dir + '/data/robot_models/go2/go2.xml'
+        xml_path = 'data/robot_models/go2/go2.xml'
+
+    dataset_use = 1.0
+    minibatch = 1024
+    loss_power = False
+
+    nq = 0 #12 + n_arms * nq_arm
+    nq_dof_full = 7 + nq
+    nv_dof_full = 6 + nq
+    flag_normalize_tau = True
+    norm_tau_epsilon = 1e-2
+    sample_offset = 10
+    tau_field = 'tau_ext_total'
+    final_sample_offset = sample_offset
+    save_checkpoint_model = False
+    log_period = 50
+    all_data_pin_to_mj = True if nn_id == 'MjxDNEA' else False
+
+    tri_ineq = True
+    skew_sym_ineq = True
+    mass_ineq = True
+
+    add_noise_to_load_data = False
+    pot_net = False
+
+    # Model DoF - nq = 6 creates a 6x6 inertia matrix
+    nq_dof_model = nq + (7 if nn_id == 'MjxDNEA' else 6)
+    nv_dof_model = nq + 6
+
+    if sample_offset > 0:
+        print(f'#####\n Using sample offset {sample_offset}!!\n#####')
+
+    dataset_map = {
+            'go2':          'go2_sim_n_runs_50_data_freq_100hz',
+            'spot_real':    'spot_real_freq_100hz',
+            'spot_arm_real':'spot_arm_real_freq_100hz',
+            'hyqreal2':     'hyqreal2_real_freq_100hz',
+            'aliengo':      'quad_mass_dataset_run6'
+        }
+    
+    dataset_name = dataset_map[robot_prefix]
+    dataset_path = 'data/datasets/' + dataset_name + file_type
+    dataset_full_path = repo_dir + '/' + dataset_path
+
+    test_labels_wanted = {
+        'go2':           ['env_0_run_2', 'env_0_run_10', 'env_0_run_11', 'env_0_run_28', 'env_0_run_41'],
+        'spot_real':     ['env_0_run_32', 'env_0_run_52'],
+        'spot_arm_real': ['env_0_run_60', 'env_0_run_71'],
+        'hyqreal2':      ['env_0_run_2', 'env_0_run_5', 'env_0_run_25'],
+        'aliengo':       []
+    }[robot_prefix]
+
+    model_folder = str(robot_prefix) + '/' + nn_id
+
+    train_data, test_data, divider = load_custom_dataset(dataset_full_path)
+
+    train_labels, train_qp, train_qv, train_qa, train_tau = train_data
+    test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g = test_data
+
+    print(f'nq_dof_model: {nq_dof_model} | nq_dof_full: {nq_dof_full}')
+    if nq_dof_model != nq_dof_full:
+        raw_train_qp = copy.deepcopy(train_qp)
+        raw_test_qp = copy.deepcopy(test_qp)
+        
+        train_euler = get_euler_from_pin_quat(raw_train_qp[:,3:7])
+        test_euler = get_euler_from_pin_quat(raw_test_qp[:,3:7])
+        train_qp = jnp.hstack((raw_train_qp[:,0:3], train_euler, raw_train_qp[:,7:]))
+        test_qp = jnp.hstack((raw_test_qp[:,0:3], test_euler, raw_test_qp[:,7:]))
+
+    if all_data_pin_to_mj:
+        print('Converting quaternion data to mujoco convention !!!!!')
+        raw_train_qp = copy.deepcopy(train_qp)
+        raw_test_qp = copy.deepcopy(test_qp)
+
+        train_mj_quat = get_mj_quat_from_pin_quat(raw_train_qp[:,3:7])
+        train_qp = jnp.hstack((raw_train_qp[:,0:3], train_mj_quat, raw_train_qp[:,7:]))
+        test_mj_quat = get_mj_quat_from_pin_quat(raw_test_qp[:,3:7])
+        test_qp = jnp.hstack((raw_test_qp[:,0:3], test_mj_quat, raw_test_qp[:,7:]))
+
+    print("\n\n################################################")
+    print("Runs:")
+    print("   Test Runs = {0}".format(test_labels))
+    print("  Train Runs = {0}".format(train_labels))
+    print("# Training Samples = {0:05d}".format(int(train_qp.shape[0])))
+    print("")
+
+    # Training Parameters:
+    # Construct Hyperparameters:
+    hyper = {
+             'diagonal_epsilon': 0.01 if nn_id == 'MjxDNEA' else 0.1,
+             'activation': 'Tanh',
+             'net_arch_torso': [0, 0],
+             'net_arch_arm': [0, 0] if nq_arm == 0 else [16, 16],
+             'net_arch_leg': [16, 16],
+             'net_arch_base_rot': [16, 16],
+             'net_arch_pot': [16, 16],
+             'net_arch_mlp': [32, 32],
+             'n_minibatch': minibatch,
+             'learning_rate': 5.e-04,
+             'weight_decay': 1.e-5,
+             'init_tf': True,
+             'act_ld': 'Softplus',
+             'softplus_beta': 1.0,
+            ## Extras
+             'mass_ineq': mass_ineq,
+             'skew_sym_ineq': skew_sym_ineq,
+             'tri_ineq': tri_ineq,
+             'tri_ineq_act_name': 'Softplus',
+             'tri_ineq_softplus_shift': 0.0,
+             'tri_ineq_softplus_beta': 6.0,
+             'diff_mass_softplus_beta': 5.0,
+             'diff_mass_shift_loss': 5.0,
+             'hr_sigma_epsilon': 1e-1,
+             'H_epsilon': 0.0,
+             'mass_epsilon': 0.01,
+             'rot_epsilon': 0.001,
+             'penalize_diff_mass': 1.0,
+             'penalize_rot_eigenvalue': 1.0,
+             'penalize_extra': True if nn_id == "FeLaN" else False,
+             'softplus_beta_base_rot': 10.0 if tri_ineq else 1.0,
+             'final_sigma_epsilon': 1e-2,
+             'dnea_inertia_epsilon': 1e-4,
+             'dnea_mass_epsilon': 1e-2,
+             # Robot
+             'nq_dof': nq_dof_full,
+             'nv_dof': nv_dof_full,
+             'n_dof_torso': 0,
+             'n_arms': n_arms,
+             'n_dof_arm': nq_arm,
+             'n_legs': 4,
+             'n_dof_leg': 3,
+             'init_mass': 50.0,
+             'pot_net': pot_net,
+             'xml_path': xml_path,
+             # MJX
+             'dyn_parametrization': dyn_parametrization,
+             # Data
+             'dataset_path': dataset_path,
+             'tau_field': tau_field,
+             'train_labels': train_labels,
+             'test_labels': test_labels,
+             # LSTM
+             'lstm_hidden_size': 10,
+             'lstm_num_layers': 5,
+             'lstm_dropout': 0.0,
+             'time_window': 20,
+             'z_dim': 10,
+             #
+             'max_epoch': 5000
+            }
+
+    if flag_normalize_tau:
+        norm_tau = jnp.var(train_tau,axis=0) + norm_tau_epsilon
+    else:
+        norm_tau = jnp.ones(nv_dof_full)
+    print(f'Norm Tau:\n{norm_tau}')
+
+    time_window = hyper['time_window']
+    batch_size  = hyper['n_minibatch']
+
+    ## Define Model Name
+    model_name = 'epochs_' + str(hyper['max_epoch'])
+    model_name += '_' + dataset_name
+
+    if nn_id == 'MjxDNEA':
+        model_name += '_' + hyper['dyn_parametrization']
+
+    model_name += '_' + str(seed)
+
+    rng = jax.random.PRNGKey(seed)
+
+    time_window = hyper['time_window']
+
+    print("\nBuilding LSTM history for training set ...")
+    train_history, train_valid_idx = create_lstm_history(train_qp, train_qv, train_tau, time_window, divider)
+
+    train_qp = train_qp[train_valid_idx][:, :6]
+    train_qv = train_qv[train_valid_idx][:, :6]
+    train_qa = train_qa[train_valid_idx][:, :6]
+    train_tau = train_tau[train_valid_idx]
+
+    if len(test_labels) > 0:
+        T_per_test_run = len(test_qp) // len(test_labels)
+        test_divider = np.arange(len(test_labels) + 1) * T_per_test_run
+    else:
+        test_divider = np.array([0, len(test_qp)])
+
+    print("Building LSTM history for test set ...")
+    test_history, test_valid_idx = create_lstm_history(test_qp, test_qv, test_tau, time_window, test_divider)
+
+    test_qp = test_qp[test_valid_idx][:, :6]
+    test_qv = test_qv[test_valid_idx][:, :6]
+    test_qa = test_qa[test_valid_idx][:, :6]
+    test_tau = test_tau[test_valid_idx]
+    test_m = test_m[test_valid_idx]
+    test_c = test_c[test_valid_idx]
+    test_g = test_g[test_valid_idx]
+
+    print(f"\n# Training samples (post-history) = {int(train_qp.shape[0])}")
+    print(f"# Test samples (post-history) = {int(test_qp.shape[0])}")
+
+    train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
+    test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
+
+    train_dataset = create_dataset(train_input_list)
+    eval_dataset = create_dataset(test_input_list)
+
+    # Construct model:
+    nn_config = get_cadelac_pp_config(hyper)
+    learned_model = CaDeLaC(nv_dof_model, nn_config)
+
+    folder_path = repo_dir + f"/trained_models/{model_folder}"
+
+    if load_model:
+        ################# Load Model #################
+        eval_params, _ = load_model_fn(model_name, folder_path)
+
+    else:
+        ################# Train Model #################
+
+        ## Initialize Model Parameters
+        dumb_n_batch = 5
+        dumb_q = jnp.zeros((dumb_n_batch, nq_dof_model))
+        dumb_qd = jnp.zeros((dumb_n_batch, nv_dof_model))
+        dumb_history = jnp.zeros((dumb_n_batch, time_window, 12+12+6))
+        rng, param_rng = jax.random.split(rng, num=2)
+        params = learned_model.init(param_rng, dumb_q, dumb_qd, dumb_qd, dumb_history)
+
+        # Check number of parameters
+        sum_param = count_parameters(params)
+        print(f'Number of model parameters {sum_param}')
+
+        # Training Parameters:
+        print("\n################################################")
+        if nn_id == 'MjxDNEA':
+            print(f"Training {learned_model.__class__.__name__} ({hyper['dyn_parametrization']}):")
+        else:
+            print(f"Training {learned_model.__class__.__name__}:")
+
+            # Init Tensorboard
+        tb_folder = repo_dir + f"/tensorboard/{model_folder}/{model_name}"
+        tb_writer = SummaryWriter(log_dir=tb_folder)
+
+        # Init Optimizer
+        optimizer = optax.adamw(
+            learning_rate=hyper["learning_rate"],
+            weight_decay=hyper["weight_decay"]
+        )
+
+        opt_state = train_state.TrainState.create(apply_fn = learned_model.apply,
+                                                  params = params,
+                                                  tx = optimizer)
+        
+        train_config = TrainConfig(num_epochs = hyper['max_epoch'],
+                                   loss_power = loss_power,
+                                   norm_tau = norm_tau,
+                                   batch_size = hyper['n_minibatch'],
+                                   log_period = log_period,
+                                   hyper = hyper,
+                                   tb_folder = tb_folder,
+                                   repo_dir = repo_dir,
+                                   save_checkpoint_model = save_checkpoint_model,)
+
+        # # Train Model
+        rng, train_rng = jax.random.split(rng, num=2)
+        train_model_state, _ = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer)
+
+        # Get Trained parameters for Evaluation
+        eval_params = train_model_state.params
+
+        # Save the Model:
+        if save_model:
+            save_model_fn(train_model_state.params, hyper, model_name, folder_path)
+
+
+    ################# Evaluate Model #################
+    norm_tau_eval = norm_tau
+    eval_results, eval_metrics = eval_components(learned_model, eval_params, eval_dataset, norm_tau_eval,)
+
+    ################# Plot Results #################
+    plot_dataset = (eval_dataset[0], eval_dataset[1], eval_dataset[2],
+                    eval_dataset[3], eval_dataset[4], eval_dataset[5],
+                    eval_dataset[6])
+
+    n_test_post = test_qp.shape[0]
+    plot_divider = np.linspace(0, n_test_post, len(test_labels) + 1).astype(int)
+
+    plot_torques(eval_results, plot_dataset, test_labels, plot_divider,
+                 model_folder, model_name, render, force_index=[0, 1, 2],
+                 norm_tau=norm_tau_eval, repo_dir=repo_dir)

@@ -72,8 +72,12 @@ def count_parameters(params):
     
 # Loss 
 def loss_fn(state, params, batch_data, config: TrainConfig):
-    q, qd, qdd, tau = batch_data
-    tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd)
+    if len(batch_data) == 5: # with history for LSTM
+        q, qd, qdd, tau, history = batch_data
+        tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd, history)
+    else: # without history
+        q, qd, qdd, tau = batch_data
+        tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd)
 
     # Compute the loss of the Euler-Lagrange Differential Equation:
     err_inv = jnp.sum((tau_hat - tau) ** 2 / config.norm_tau, axis=1)

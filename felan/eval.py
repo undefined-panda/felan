@@ -11,6 +11,8 @@ def eval_components(model, eval_params, eval_dataset, norm_tau = None):
     print("\n################################################")
     print("Model Evaluation:")
 
+    has_history = len(eval_dataset) == 8
+
     data_batches = data_loader(eval_dataset, batch_size=1000, shuffle=False)
     t0_eval = time.perf_counter()
 
@@ -21,19 +23,33 @@ def eval_components(model, eval_params, eval_dataset, norm_tau = None):
     q_all, qd_all, qdd_all = [], [], []
 
     for batch in data_batches:
-        q, qd, qdd, tau, tau_m, tau_c, tau_g = batch
+        if has_history:
+            q, qd, qdd, tau, tau_m, tau_c, tau_g, history = batch
+        else:
+            q, qd, qdd, tau, tau_m, tau_c, tau_g = batch
 
         qd_zeros = jnp.zeros_like(qd)
         if norm_tau is None:
             norm_tau = jnp.ones_like(tau)
 
+        if has_history:
+            eval_g, _, _   = model.apply(eval_params, q, qd_zeros, qd_zeros, history)
+            eval_c, _, _   = model.apply(eval_params, q, qd,       qd_zeros, history)
+            eval_m, _, _   = model.apply(eval_params, q, qd_zeros, qdd,      history)
+            eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd, history)
+        else:
+            eval_g, _, _   = model.apply(eval_params, q, qd_zeros, qd_zeros)
+            eval_c, _, _   = model.apply(eval_params, q, qd,       qd_zeros)
+            eval_m, _, _   = model.apply(eval_params, q, qd_zeros, qdd)
+            eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
+
         # Evaluate Components
-        eval_g, _, _ = model.apply(eval_params, q, qd_zeros, qd_zeros)
-        eval_c, _, _ = model.apply(eval_params, q, qd, qd_zeros)
-        eval_m, _, _ = model.apply(eval_params, q, qd_zeros, qdd)
+        # eval_g, _, _ = model.apply(eval_params, q, qd_zeros, qd_zeros)
+        # eval_c, _, _ = model.apply(eval_params, q, qd, qd_zeros)
+        # eval_m, _, _ = model.apply(eval_params, q, qd_zeros, qdd)
         eval_c = eval_c - eval_g
         eval_m = eval_m - eval_g
-        eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
+        # eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
         test_dEdt = jnp.sum(tau * qd, axis=1)
 
         # Collect outputs
@@ -335,7 +351,10 @@ def plot_components(eval_results, eval_dataset, test_labels, divider, model_type
 
 
 def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_folder, model_name, render = True, force_index = [], norm_tau = None, repo_dir = ''):
-    q, qd, qdd, test_tau, test_m, test_c, test_g = eval_dataset
+    if len(eval_dataset) == 8:
+        q, qd, qdd, test_tau, test_m, test_c, test_g, _ = eval_dataset
+    else:
+        q, qd, qdd, test_tau, test_m, test_c, test_g = eval_dataset
     _, _, _, eval_tau, eval_m, eval_c, eval_g = eval_results
     n_dof = test_tau.shape[-1]
 
@@ -375,7 +394,7 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         y_g_low = jnp.concatenate((y_g_low, -10*jnp.ones(1)))
         y_g_max = jnp.concatenate((y_g_max, 10*jnp.ones(1)))
 
-    plt.rc('text', usetex=True)
+    plt.rc('text', usetex=False)
     color_i = ["r", "b", "g", "k"]
 
     ticks = jnp.array(divider)
