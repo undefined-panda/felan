@@ -25,99 +25,11 @@ repo_dir = os.path.dirname(os.path.abspath(__file__))
 from tensorboardX import SummaryWriter
 from felan.data_scripts.jax_utils import init_env
 from felan.models.np_math_utils import *
+from felan.data_scripts.data_loaders import load_custom_dataset
 
 from felan.train import *
 from felan.eval import *
 from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_cadelac_pp_config
-
-def load_custom_dataset(dataset_full_path, train_size=0.75, seed=None):
-    data = np.load(dataset_full_path)
-
-    q_full = np.concatenate([data['base_pos'], data['base_orient'], data['joint_pos']], axis=-1)
-    qd_full = np.concatenate([data['base_vel'], data['base_ang_vel'], data['joint_vel']], axis=-1)
-    qdd_full = np.concatenate([data['base_acc']], axis=-1)
-
-    residual_torque = (data['diff_tau_m_nom'] + data['diff_tau_c_nom'] + data['diff_tau_g_nom'])[..., :6]
-
-    n_runs = q_full.shape[0]
-    run_labels = [f'run_{i}' for i in range(n_runs)]
-
-    rng = np.random.default_rng(seed)
-    n_test = int(n_runs * (1 - train_size))
-    test_run_indices = rng.choice(np.arange(n_runs), n_test, replace=False)
-
-    test_mask  = np.zeros(n_runs, dtype=bool)
-    test_mask[test_run_indices] = True
-    train_mask = ~test_mask
-
-    train_q, test_q = q_full[train_mask], q_full[test_mask]
-    train_qd, test_qd = qd_full[train_mask], qd_full[test_mask]
-    train_qdd, test_qdd = qdd_full[train_mask], qdd_full[test_mask]
-    train_tau, test_tau = residual_torque[train_mask], residual_torque[test_mask]
-
-    test_m = data['tau_m'][test_mask][..., :6]
-    test_c = data['tau_c'][test_mask][..., :6]
-    test_g = data['tau_g'][test_mask][..., :6]
-
-    train_labels = [run_labels[i] for i in range(n_runs) if train_mask[i]]
-    test_labels = [run_labels[i] for i in range(n_runs) if test_mask[i]]
-
-    def flatten(arr):
-        return arr.reshape(-1, arr.shape[-1])
-
-    train_q = flatten(train_q)
-    train_qd = flatten(train_qd)
-    train_qdd = flatten(train_qdd)
-    train_tau = flatten(train_tau)
-    test_q = flatten(test_q)
-    test_qd = flatten(test_qd)
-    test_qdd = flatten(test_qdd)
-    test_tau = flatten(test_tau)
-    test_m = flatten(test_m)
-    test_c = flatten(test_c)
-    test_g = flatten(test_g)
-
-    train_data = (train_labels, train_q, train_qd, train_qdd, train_tau)
-    test_data = (test_labels, test_q, test_qd, test_qdd, test_tau, test_m, test_c, test_g)
-
-    T = data['joint_pos'].shape[1]
-    n_test  = int(test_mask.sum())
-    divider = list(np.arange(n_test + 1) * T)
-
-    return train_data, test_data, divider
-
-def create_lstm_history(train_q, train_qd, train_tau, time_window, divider):
-    q = np.asarray(train_q)
-    qd = np.asarray(train_qd)
-    tau = np.asarray(train_tau)
-
-    joint_pos = q[:, -12:]
-    joint_vel = qd[:, -12:]
-    joint_tau = tau[:, :6]
-
-    D_hist = 12 + 12 + 6
-
-    valid_idx = []
-    for i in range(len(divider) - 1):
-        run_start, run_end = int(divider[i]), int(divider[i + 1])
-        for t in range(run_start + time_window, run_end):
-            valid_idx.append(t)
-    valid_idx = np.asarray(valid_idx, dtype=np.int64)
-
-    n_valid = len(valid_idx)
-
-    print(f"  create_lstm_history: {n_valid} valid samples "
-          f"(from {q.shape[0]} total, {q.shape[0] - n_valid} dropped "
-          f"because of time_window={time_window})")
-
-    history = np.zeros((n_valid, time_window, D_hist), dtype=np.float32)
-    for i, t in enumerate(valid_idx):
-        q_win = joint_pos[t - time_window:t]
-        qd_win = joint_vel[t - time_window:t]
-        tau_win = joint_tau[t - time_window:t]
-        history[i] = np.concatenate([q_win, qd_win, tau_win], axis=-1)
-
-    return jnp.asarray(history), valid_idx
 
 def loss_fn_cadelac(state, params, batch_data, config: TrainConfig):
     q, qd, qdd, tau, history = batch_data
@@ -254,10 +166,20 @@ if __name__ == "__main__":
 
     model_folder = str(robot_prefix) + '/' + nn_id
 
-    train_data, test_data, divider = load_custom_dataset(dataset_full_path)
+    time_window = 20
 
-    train_labels, train_qp, train_qv, train_qa, train_tau = train_data
-    test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g = test_data
+    train_data, test_data, divider, dt_mean = load_custom_dataset(
+        dataset_full_path,
+        hist_length=time_window,
+        sample_offset=0,
+        seed=seed,
+    )
+
+    (train_labels, train_qp, train_qv, train_qa, train_tau,
+    train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau) = train_data
+
+    (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g,
+    test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau) = test_data
 
     print(f'nq_dof_model: {nq_dof_model} | nq_dof_full: {nq_dof_full}')
     if nq_dof_model != nq_dof_full:
@@ -345,7 +267,7 @@ if __name__ == "__main__":
              'lstm_hidden_size': 10,
              'lstm_num_layers': 5,
              'lstm_dropout': 0.0,
-             'time_window': 20,
+             'time_window': time_window,
              'z_dim': 10,
              #
              'max_epoch': 5000
@@ -354,10 +276,9 @@ if __name__ == "__main__":
     if flag_normalize_tau:
         norm_tau = jnp.var(train_tau,axis=0) + norm_tau_epsilon
     else:
-        norm_tau = jnp.ones(nv_dof_full)
+        norm_tau = jnp.ones(6)
     print(f'Norm Tau:\n{norm_tau}')
 
-    time_window = hyper['time_window']
     batch_size  = hyper['n_minibatch']
 
     ## Define Model Name
@@ -373,30 +294,14 @@ if __name__ == "__main__":
 
     time_window = hyper['time_window']
 
-    print("\nBuilding LSTM history for training set ...")
-    train_history, train_valid_idx = create_lstm_history(train_qp, train_qv, train_tau, time_window, divider)
-
-    train_qp = train_qp[train_valid_idx][:, :6]
-    train_qv = train_qv[train_valid_idx][:, :6]
-    train_qa = train_qa[train_valid_idx][:, :6]
-    train_tau = train_tau[train_valid_idx]
-
-    if len(test_labels) > 0:
-        T_per_test_run = len(test_qp) // len(test_labels)
-        test_divider = np.arange(len(test_labels) + 1) * T_per_test_run
-    else:
-        test_divider = np.array([0, len(test_qp)])
-
-    print("Building LSTM history for test set ...")
-    test_history, test_valid_idx = create_lstm_history(test_qp, test_qv, test_tau, time_window, test_divider)
-
-    test_qp = test_qp[test_valid_idx][:, :6]
-    test_qv = test_qv[test_valid_idx][:, :6]
-    test_qa = test_qa[test_valid_idx][:, :6]
-    test_tau = test_tau[test_valid_idx]
-    test_m = test_m[test_valid_idx]
-    test_c = test_c[test_valid_idx]
-    test_g = test_g[test_valid_idx]
+    train_history = jnp.asarray(np.concatenate(
+        [train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau],
+        axis=-1
+    ))
+    test_history = jnp.asarray(np.concatenate(
+        [test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau],
+        axis=-1
+    ))
 
     print(f"\n# Training samples (post-history) = {int(train_qp.shape[0])}")
     print(f"# Test samples (post-history) = {int(test_qp.shape[0])}")
