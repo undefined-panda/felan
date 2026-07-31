@@ -182,7 +182,6 @@ def sample_lstm_batch(key, q_flat, qd_flat, tau_flat, valid_starts,
 def train_step(state, x_batch, y_batch, norm_tau, apply_fn):
     def loss_fn(params):
         tau_pred, _, _ = apply_fn(params, x_batch)
-        print(tau_pred.shape, y_batch.shape)
         return jnp.mean(jnp.sum((tau_pred - y_batch) ** 2 / norm_tau, axis=-1))
     loss, grads = jax.value_and_grad(loss_fn)(state.params)
     state = state.apply_gradients(grads=grads)
@@ -390,7 +389,7 @@ if __name__ == "__main__":
         'spot_real':    'spot_real_freq_100hz',
         'spot_arm_real':'spot_arm_real_freq_100hz',
         'hyqreal2':     'hyqreal2_real_freq_100hz',
-        'aliengo':      'quad_mass_dataset_run6'
+        'aliengo':      'quad_mass_dataset_run7'
     }
     dataset_name = dataset_map[robot_prefix]
     dataset_full_path = os.path.join(repo_dir, 'data', 'datasets', dataset_name + file_type)

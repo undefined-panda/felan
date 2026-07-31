@@ -95,12 +95,12 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     qa = raw['base_acc']
     tau = raw['joint_torque']
     diff_tau = (raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., :6]
-    tau_m_all = raw['tau_m']
-    tau_c_all = raw['tau_c']
-    tau_g_all = raw['tau_g']
-    diff_tau_m_all = raw['diff_tau_m_nom']
-    diff_tau_c_all = raw['diff_tau_c_nom']
-    diff_tau_g_all = raw['diff_tau_g_nom']
+    tau_m_all = raw['tau_m'][..., :6]
+    tau_c_all = raw['tau_c'][..., :6]
+    tau_g_all = raw['tau_g'][..., :6]
+    diff_tau_m_all = raw['diff_tau_m_nom'][..., :6]
+    diff_tau_c_all = raw['diff_tau_c_nom'][..., :6]
+    diff_tau_g_all = raw['diff_tau_g_nom'][..., :6]
     time_all = raw['time']
 
     n_runs = qp.shape[0]
@@ -162,7 +162,7 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     train_qp, train_qv, train_qa, train_tau = np.zeros((0, 7)), np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
 
     test_qp, test_qv, test_qa, test_tau = np.zeros((0, 7)), np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
-    test_m, test_c, test_g = np.zeros((0, 18)), np.zeros((0, 18)), np.zeros((0, 18))
+    test_m, test_c, test_g = np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
 
     if hist_length > 0:
         train_hist_qp, train_hist_qv, train_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))

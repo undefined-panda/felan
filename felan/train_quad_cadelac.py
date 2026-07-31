@@ -115,7 +115,6 @@ if __name__ == "__main__":
         xml_path = 'data/robot_models/go2/go2.xml'
 
     dataset_use = 1.0
-    minibatch = 1024
     loss_power = False
 
     nq = 0 #12 + n_arms * nq_arm
@@ -149,7 +148,7 @@ if __name__ == "__main__":
             'spot_real':    'spot_real_freq_100hz',
             'spot_arm_real':'spot_arm_real_freq_100hz',
             'hyqreal2':     'hyqreal2_real_freq_100hz',
-            'aliengo':      'quad_mass_dataset_run6'
+            'aliengo':      'quad_mass_dataset_run7'
         }
     
     dataset_name = dataset_map[robot_prefix]
@@ -166,7 +165,7 @@ if __name__ == "__main__":
 
     model_folder = str(robot_prefix) + '/' + nn_id
 
-    time_window = 20
+    time_window = 15
 
     train_data, test_data, divider, dt_mean = load_custom_dataset(
         dataset_full_path,
@@ -217,14 +216,15 @@ if __name__ == "__main__":
              'net_arch_arm': [0, 0] if nq_arm == 0 else [16, 16],
              'net_arch_leg': [16, 16],
              'net_arch_base_rot': [16, 16],
-             'net_arch_pot': [16, 16],
+             'net_arch_pot': [32, 32], # size of pot_net
              'net_arch_mlp': [32, 32],
-             'n_minibatch': minibatch,
+             'n_minibatch': 1024,
              'learning_rate': 5.e-04,
              'weight_decay': 1.e-5,
              'init_tf': True,
              'act_ld': 'Softplus',
              'softplus_beta': 1.0,
+             'net_arch_inertia_full': [32, 32], # size of inertia_net
             ## Extras
              'mass_ineq': mass_ineq,
              'skew_sym_ineq': skew_sym_ineq,
@@ -270,7 +270,7 @@ if __name__ == "__main__":
              'time_window': time_window,
              'z_dim': 10,
              #
-             'max_epoch': 5000
+             'max_epoch': 3000
             }
 
     if flag_normalize_tau:
@@ -291,8 +291,6 @@ if __name__ == "__main__":
     model_name += '_' + str(seed)
 
     rng = jax.random.PRNGKey(seed)
-
-    time_window = hyper['time_window']
 
     train_history = jnp.asarray(np.concatenate(
         [train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau],
@@ -329,7 +327,7 @@ if __name__ == "__main__":
         dumb_n_batch = 5
         dumb_q = jnp.zeros((dumb_n_batch, nq_dof_model))
         dumb_qd = jnp.zeros((dumb_n_batch, nv_dof_model))
-        dumb_history = jnp.zeros((dumb_n_batch, time_window, 12+12+6))
+        dumb_history = jnp.zeros((dumb_n_batch, time_window, 12+12+6)) # joint pos (12), joint vel (12), base torque (6)
         rng, param_rng = jax.random.split(rng, num=2)
         params = learned_model.init(param_rng, dumb_q, dumb_qd, dumb_qd, dumb_history)
 
