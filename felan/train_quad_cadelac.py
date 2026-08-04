@@ -30,6 +30,7 @@ from felan.data_scripts.data_loaders import load_custom_dataset
 from felan.train import *
 from felan.eval import *
 from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_cadelac_pp_config
+from felan.models.lstm_black_box import LSTMBlackBox, get_config_from_dict as get_lstm_config
 
 def loss_fn_cadelac(state, params, batch_data, config: TrainConfig):
     q, qd, qdd, tau, history = batch_data
@@ -94,6 +95,7 @@ if __name__ == "__main__":
     parser.add_argument("--robot", type=str, default="go2", choices=["go2", "spot_real", "hyqreal2", "spot_arm_real", "aliengo"])
     parser.add_argument("--inertia-param", type=str, default="PrincipalTriangular", choices=["PrincipalTriangular", "PrincipalUnconstrained", "SpatialCov", "SpatialSpd", "SpatialLogCholesky"], help="Inertia parametrization",)
     parser.add_argument("--file_type", type=str, default="pkl", choices=["npz", "pkl"])
+    parser.add_argument("--only_lstm", type=bool, default=False, choices=[True, False])
 
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
@@ -101,6 +103,7 @@ if __name__ == "__main__":
     robot_prefix = args.robot
     nn_id = "CaDeLaC"
     file_type = "."+args.file_type
+    only_lstm = args.only_lstm
     dyn_parametrization = args.inertia_param
 
     if 'arm' in robot_prefix:
@@ -268,9 +271,9 @@ if __name__ == "__main__":
              'lstm_num_layers': 5,
              'lstm_dropout': 0.0,
              'time_window': time_window,
-             'z_dim': 10,
+             'n_output': 6 if only_lstm else 10,
              #
-             'max_epoch': 3000
+             'max_epoch': 10
             }
 
     if flag_normalize_tau:
@@ -289,6 +292,9 @@ if __name__ == "__main__":
         model_name += '_' + hyper['dyn_parametrization']
 
     model_name += '_' + str(seed)
+    
+    if only_lstm:
+        model_name += '_LSTM'
 
     rng = jax.random.PRNGKey(seed)
 
@@ -311,8 +317,12 @@ if __name__ == "__main__":
     eval_dataset = create_dataset(test_input_list)
 
     # Construct model:
-    nn_config = get_cadelac_pp_config(hyper)
-    learned_model = CaDeLaC(nv_dof_model, nn_config)
+    if only_lstm:
+        nn_config = get_lstm_config(hyper)
+        learned_model = LSTMBlackBox(n_dof=nq, config=nn_config)
+    else:
+        nn_config = get_cadelac_pp_config(hyper)
+        learned_model = CaDeLaC(nv_dof_model, nn_config)
 
     folder_path = repo_dir + f"/trained_models/{model_folder}"
 

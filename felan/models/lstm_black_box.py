@@ -62,7 +62,7 @@ class LSTMBlackBox(nn.Module):
     config: LSTMBlackBoxConfig
 
     @nn.compact
-    def __call__(self, x_seq, training: bool = False):
+    def __call__(self, q, qd, qdd, x_seq, training: bool = False):
         cfg = self.config.lstm_config
         assert cfg is not None, "lstm_config muss gesetzt sein"
 
