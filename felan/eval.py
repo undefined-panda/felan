@@ -133,7 +133,7 @@ def eval_components(model, eval_params, eval_dataset, norm_tau = None):
 
     return create_dataset([q, qd, qdd, eval_tau, eval_m, eval_c, eval_g]), metrics
 
-def plot_components(eval_results, eval_dataset, test_labels, divider, model_type_folder, model_name, render = True, force_index = [], repo_dir = ''):
+def plot_components(eval_results, eval_dataset, test_labels, divider, model_type_folder, model_name, avg_mse, render = True, force_index = [], repo_dir = ''):
     q, qd, qdd, test_tau, test_m, test_c, test_g = eval_dataset
     _, _, _, eval_tau, eval_m, eval_c, eval_g = eval_results
     n_dof = test_tau.shape[-1]
@@ -185,7 +185,7 @@ def plot_components(eval_results, eval_dataset, test_labels, divider, model_type
         ax0 = fig.add_subplot(2, 4, 1)
         # ax0.set_title(r"$\boldsymbol{\tau}$")
         ax0.set_title('Torque')
-        ax0.text(s=f'Joint {i}', x=-0.35, y=.5, fontsize=12, fontweight="bold", rotation=90, horizontalalignment="center", verticalalignment="center", transform=ax0.transAxes)
+        ax0.text(s=f'Joint {i} (Avg. MSE: {avg_mse})', x=-0.35, y=.5, fontsize=12, fontweight="bold", rotation=90, horizontalalignment="center", verticalalignment="center", transform=ax0.transAxes)
         if i in force_index:
             ax0.set_ylabel("Force [N]")
         else:

@@ -93,17 +93,17 @@ if __name__ == "__main__":
     parser.add_argument("-l", nargs=1, type=int, required=False, default=[0, ], help="Load the model")
     parser.add_argument("-m", nargs=1, type=int, required=False, default=[1, ], help="Save the model")
     parser.add_argument("--robot", type=str, default="go2", choices=["go2", "spot_real", "hyqreal2", "spot_arm_real", "aliengo"])
+    parser.add_argument("--nn", type=str, default="CaDeLaC", choices=["CaDeLaC", "LSTM"])
     parser.add_argument("--inertia-param", type=str, default="PrincipalTriangular", choices=["PrincipalTriangular", "PrincipalUnconstrained", "SpatialCov", "SpatialSpd", "SpatialLogCholesky"], help="Inertia parametrization",)
     parser.add_argument("--file_type", type=str, default="pkl", choices=["npz", "pkl"])
-    parser.add_argument("--only_lstm", type=bool, default=False, choices=[True, False])
 
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
 
     robot_prefix = args.robot
-    nn_id = "CaDeLaC"
+    nn_id = args.robot
     file_type = "."+args.file_type
-    only_lstm = args.only_lstm
+    only_lstm = nn_id == "LSTM"
     dyn_parametrization = args.inertia_param
 
     if 'arm' in robot_prefix:
@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     time_window = 15
 
-    train_data, test_data, divider, dt_mean = load_custom_dataset(
+    train_data, test_data, divider, dt_mean, test_base_mass = load_custom_dataset(
         dataset_full_path,
         hist_length=time_window,
         sample_offset=0,
@@ -399,6 +399,10 @@ if __name__ == "__main__":
 
     n_test_post = test_qp.shape[0]
     plot_divider = np.linspace(0, n_test_post, len(test_labels) + 1).astype(int)
+
+    torque_mse = eval_metrics["eval/tau/mean"]
+    for i in range(len(test_labels)):
+        test_labels[i] += f"\nMSE: ({torque_mse[i]:.3f})\Mass: ({test_base_mass[i]:.2f})"
 
     plot_torques(eval_results, plot_dataset, test_labels, plot_divider,
                  model_folder, model_name, render, force_index=[0, 1, 2],

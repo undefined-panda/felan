@@ -102,6 +102,7 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     diff_tau_c_all = raw['diff_tau_c_nom'][..., :6]
     diff_tau_g_all = raw['diff_tau_g_nom'][..., :6]
     time_all = raw['time']
+    base_mass = raw['base_mass'].mean(axis=1)
 
     n_runs = qp.shape[0]
     labels_all = [f'run_{i}' for i in range(n_runs)]
@@ -169,6 +170,7 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
         test_hist_qp, test_hist_qv, test_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
 
     divider = [0, ]   # Contains idx between characters for plotting
+    test_base_mass = []
 
     for i in range(int(dataset_use*len(data["labels"]))):
 
@@ -190,6 +192,7 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
                 test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
 
             divider.append(test_qp.shape[0])
+            test_base_mass.append(base_mass[i])
 
         else:
             train_labels.append(data["labels"][i])
@@ -213,4 +216,4 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
         train_data = (train_labels, train_qp, train_qv, train_qa, train_tau)
         test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)
 
-    return train_data, test_data, divider, dt_mean
+    return train_data, test_data, divider, dt_mean, test_base_mass
