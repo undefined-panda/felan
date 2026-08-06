@@ -89,9 +89,13 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     raw = np.load(filename)
 
     qp = np.concatenate([raw['base_pos'], raw['base_orient']], axis=-1)
+    base_pos_z = raw["base_pos"][..., 2:3]
     joint_pos = raw["joint_pos"]
-    qv = np.concatenate([raw['base_vel'], raw['base_ang_vel']], axis=-1)
+    base_orient = raw["base_orient"]
     joint_vel = raw["joint_vel"]
+    base_vel = raw["base_vel"]
+    base_ang_vel = raw["base_ang_vel"]
+    qv = np.concatenate([raw['base_vel'], raw['base_ang_vel']], axis=-1)
     qa = raw['base_acc']
     tau = raw['joint_torque']
     diff_tau = (raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., :6]
@@ -110,9 +114,13 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     data = {
         'labels': labels_all,
         'qp': [qp[i] for i in range(n_runs)],
+        'base_pos_z': [base_pos_z[i] for i in range(n_runs)],
         'joint_pos': [joint_pos[i] for i in range(n_runs)],
+        'base_orient': [base_orient[i] for i in range(n_runs)],
         'qv': [qv[i] for i in range(n_runs)],
         'joint_vel': [joint_vel[i] for i in range(n_runs)],
+        'base_vel': [base_vel[i] for i in range(n_runs)],
+        'base_ang_vel': [base_ang_vel[i] for i in range(n_runs)],
         'qa': [qa[i] for i in range(n_runs)],
         'tau': [tau[i] for i in range(n_runs)],
         'diff_tau': [diff_tau[i] for i in range(n_runs)],
@@ -145,7 +153,8 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
         print("################################################")
 
     if hist_length > 0:
-        data, data_hist = add_historical_data(hist_length, data, list_key=["joint_pos", "joint_vel", "diff_tau"])
+        data, data_hist = add_historical_data(hist_length, data, list_key=["joint_pos", "joint_vel", "diff_tau",
+                                                                           "base_orient", "base_vel", "base_ang_vel", "base_pos_z"])
 
     # Split the dataset in train and test set:
     rng = np.random.default_rng(seed)
@@ -167,7 +176,9 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
 
     if hist_length > 0:
         train_hist_qp, train_hist_qv, train_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
+        train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_base_pos_z = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 1))
         test_hist_qp, test_hist_qv, test_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
+        test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_base_pos_z = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 1))
 
     divider = [0, ]   # Contains idx between characters for plotting
     test_base_mass = []
@@ -190,6 +201,10 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
                 test_hist_qp = np.vstack((test_hist_qp, data_hist["joint_pos"][i][sample_offset:]))
                 test_hist_qv = np.vstack((test_hist_qv, data_hist["joint_vel"][i][sample_offset:]))
                 test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+                test_hist_base_orient = np.vstack((test_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
+                test_hist_base_vel = np.vstack((test_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
+                test_hist_base_ang_vel = np.vstack((test_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
+                test_hist_base_pos_z = np.vstack((test_hist_base_pos_z, data_hist["base_pos_z"][i][sample_offset:]))
 
             divider.append(test_qp.shape[0])
             test_base_mass.append(base_mass[i])
@@ -206,12 +221,18 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
                 train_hist_qp = np.vstack((train_hist_qp, data_hist["joint_pos"][i][sample_offset:]))
                 train_hist_qv = np.vstack((train_hist_qv, data_hist["joint_vel"][i][sample_offset:]))
                 train_hist_diff_tau_nom = np.vstack((train_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+                train_hist_base_orient = np.vstack((train_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
+                train_hist_base_vel = np.vstack((train_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
+                train_hist_base_ang_vel = np.vstack((train_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
+                train_hist_base_pos_z = np.vstack((train_hist_base_pos_z, data_hist["base_pos_z"][i][sample_offset:]))
 
     if hist_length > 0:
         train_data = (train_labels, train_qp, train_qv, train_qa, train_tau, \
-                     train_hist_qp, train_hist_qv, train_hist_diff_tau_nom)
+                    train_hist_qp, train_hist_qv, train_hist_diff_tau_nom, \
+                    train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_base_pos_z)
         test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, \
-                     test_hist_qp, test_hist_qv, test_hist_diff_tau_nom)       
+                    test_hist_qp, test_hist_qv, test_hist_diff_tau_nom, \
+                    test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_base_pos_z)
     else:
         train_data = (train_labels, train_qp, train_qv, train_qa, train_tau)
         test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)

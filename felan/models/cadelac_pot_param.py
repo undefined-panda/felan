@@ -314,6 +314,6 @@ class CaDeLaC(nn.Module):
         self.delan = DeLaNPotParam(n_dof=self.n_dof, config=self.config.delan_config)
 
     def __call__(self, q, qd, qdd, history):
-        z, _, _ = self.lstm(history)
+        z, _, _ = self.lstm(q, qd, qdd, history)
         tau_pred, dEdt, extras = self.delan(q, qd, qdd, z)
         return tau_pred, dEdt, extras

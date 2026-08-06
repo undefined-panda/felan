@@ -96,15 +96,21 @@ if __name__ == "__main__":
     parser.add_argument("--nn", type=str, default="CaDeLaC", choices=["CaDeLaC", "LSTM"])
     parser.add_argument("--inertia-param", type=str, default="PrincipalTriangular", choices=["PrincipalTriangular", "PrincipalUnconstrained", "SpatialCov", "SpatialSpd", "SpatialLogCholesky"], help="Inertia parametrization",)
     parser.add_argument("--file_type", type=str, default="pkl", choices=["npz", "pkl"])
+    parser.add_argument("--epochs", type=int, default=3000)
+    parser.add_argument("--delan_size", type=int, nargs="+", default=[16,16])
+    parser.add_argument("--input_values", type=str, default="joint", choices=["joint", "base", "base_pos_z"])
 
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
 
     robot_prefix = args.robot
-    nn_id = args.robot
+    nn_id = args.nn
     file_type = "."+args.file_type
     only_lstm = nn_id == "LSTM"
     dyn_parametrization = args.inertia_param
+    epochs = args.epochs
+    delan_size = args.delan_size
+    input_values = args.input_values
 
     if 'arm' in robot_prefix:
         n_arms = 1
@@ -174,14 +180,18 @@ if __name__ == "__main__":
         dataset_full_path,
         hist_length=time_window,
         sample_offset=0,
-        seed=seed,
+        seed=seed
     )
 
     (train_labels, train_qp, train_qv, train_qa, train_tau,
-    train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau) = train_data
+    train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau,
+    train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel,
+    train_hist_base_pos_z) = train_data
 
     (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g,
-    test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau) = test_data
+    test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau,
+    test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel,
+    test_hist_base_pos_z) = test_data
 
     print(f'nq_dof_model: {nq_dof_model} | nq_dof_full: {nq_dof_full}')
     if nq_dof_model != nq_dof_full:
@@ -203,6 +213,59 @@ if __name__ == "__main__":
         test_mj_quat = get_mj_quat_from_pin_quat(raw_test_qp[:,3:7])
         test_qp = jnp.hstack((raw_test_qp[:,0:3], test_mj_quat, raw_test_qp[:,7:]))
 
+    match input_values.split("_")[0]:
+        case "joint":            
+            # input size: 12+12+6 = 30
+            train_history = jnp.asarray(np.concatenate(
+                [train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau],
+                axis=-1
+            ))
+
+            test_history = jnp.asarray(np.concatenate(
+                [test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau],
+                axis=-1
+            ))
+
+            train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
+            test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
+
+        case "base":
+            match input_values:
+                case "base_pos_z":
+                    # input size: 4+3+3+6 = 16
+                    train_history = jnp.asarray(np.concatenate(
+                        [train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_base_pos_z, train_hist_diff_tau],
+                        axis=-1
+                    ))
+
+                    test_history = jnp.asarray(np.concatenate(
+                        [test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_base_pos_z, test_hist_diff_tau],
+                        axis=-1
+                    ))
+
+                case "base":
+                    # input size: 4+3+6 = 13
+                    train_history = jnp.asarray(np.concatenate(
+                        [train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_diff_tau],
+                        axis=-1
+                    ))
+
+                    test_history = jnp.asarray(np.concatenate(
+                        [test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_diff_tau],
+                        axis=-1
+                    ))
+
+                case _:
+                    raise ValueError(f"Invalid value for 'input_values': {input_values}")
+
+            train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
+            test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
+
+        case _:
+            raise ValueError(f"Invalid value for 'input_values': {input_values}")
+
+    print(f"# Shape of history: {train_history.shape[-1]}")
+
     print("\n\n################################################")
     print("Runs:")
     print("   Test Runs = {0}".format(test_labels))
@@ -219,7 +282,7 @@ if __name__ == "__main__":
              'net_arch_arm': [0, 0] if nq_arm == 0 else [16, 16],
              'net_arch_leg': [16, 16],
              'net_arch_base_rot': [16, 16],
-             'net_arch_pot': [32, 32], # size of pot_net
+             'net_arch_pot': delan_size, # size of pot_net
              'net_arch_mlp': [32, 32],
              'n_minibatch': 1024,
              'learning_rate': 5.e-04,
@@ -227,7 +290,7 @@ if __name__ == "__main__":
              'init_tf': True,
              'act_ld': 'Softplus',
              'softplus_beta': 1.0,
-             'net_arch_inertia_full': [32, 32], # size of inertia_net
+             'net_arch_inertia_full': delan_size, # size of inertia_net
             ## Extras
              'mass_ineq': mass_ineq,
              'skew_sym_ineq': skew_sym_ineq,
@@ -273,7 +336,7 @@ if __name__ == "__main__":
              'time_window': time_window,
              'n_output': 6 if only_lstm else 10,
              #
-             'max_epoch': 10
+             'max_epoch': epochs
             }
 
     if flag_normalize_tau:
@@ -285,33 +348,18 @@ if __name__ == "__main__":
     batch_size  = hyper['n_minibatch']
 
     ## Define Model Name
-    model_name = 'epochs_' + str(hyper['max_epoch'])
-    model_name += '_' + dataset_name
+    if only_lstm:
+        model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + input_values + '_seed_' + str(seed) + '_LSTM'
+    else:
+        model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + input_values + '_seed_' + str(seed) + '_' + ','.join(str(x) for x in delan_size)
 
     if nn_id == 'MjxDNEA':
         model_name += '_' + hyper['dyn_parametrization']
 
-    model_name += '_' + str(seed)
-    
-    if only_lstm:
-        model_name += '_LSTM'
-
     rng = jax.random.PRNGKey(seed)
-
-    train_history = jnp.asarray(np.concatenate(
-        [train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau],
-        axis=-1
-    ))
-    test_history = jnp.asarray(np.concatenate(
-        [test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau],
-        axis=-1
-    ))
 
     print(f"\n# Training samples (post-history) = {int(train_qp.shape[0])}")
     print(f"# Test samples (post-history) = {int(test_qp.shape[0])}")
-
-    train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
-    test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
 
     train_dataset = create_dataset(train_input_list)
     eval_dataset = create_dataset(test_input_list)
@@ -337,7 +385,7 @@ if __name__ == "__main__":
         dumb_n_batch = 5
         dumb_q = jnp.zeros((dumb_n_batch, nq_dof_model))
         dumb_qd = jnp.zeros((dumb_n_batch, nv_dof_model))
-        dumb_history = jnp.zeros((dumb_n_batch, time_window, 12+12+6)) # joint pos (12), joint vel (12), base torque (6)
+        dumb_history = jnp.zeros((dumb_n_batch, time_window, train_history.shape[-1]))
         rng, param_rng = jax.random.split(rng, num=2)
         params = learned_model.init(param_rng, dumb_q, dumb_qd, dumb_qd, dumb_history)
 
@@ -400,9 +448,8 @@ if __name__ == "__main__":
     n_test_post = test_qp.shape[0]
     plot_divider = np.linspace(0, n_test_post, len(test_labels) + 1).astype(int)
 
-    torque_mse = eval_metrics["eval/tau/mean"]
     for i in range(len(test_labels)):
-        test_labels[i] += f"\nMSE: ({torque_mse[i]:.3f})\Mass: ({test_base_mass[i]:.2f})"
+        test_labels[i] += f"\nMass: ({test_base_mass[i]:.2f})"
 
     plot_torques(eval_results, plot_dataset, test_labels, plot_divider,
                  model_folder, model_name, render, force_index=[0, 1, 2],
