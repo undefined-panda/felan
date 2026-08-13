@@ -31,6 +31,7 @@ from felan.train import *
 from felan.eval import *
 from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_cadelac_pp_config
 from felan.models.lstm_black_box import LSTMBlackBox, get_config_from_dict as get_lstm_config
+from felan.models.log_chol_cadelac_pot_param import CaDeLaCLogChol, get_config_from_dict as get_cadelac_log_chol_pp_config
 
 def loss_fn_cadelac(state, params, batch_data, config: TrainConfig):
     q, qd, qdd, tau, history = batch_data
@@ -93,7 +94,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", nargs=1, type=int, required=False, default=[0, ], help="Load the model")
     parser.add_argument("-m", nargs=1, type=int, required=False, default=[1, ], help="Save the model")
     parser.add_argument("--robot", type=str, default="go2", choices=["go2", "spot_real", "hyqreal2", "spot_arm_real", "aliengo"])
-    parser.add_argument("--nn", type=str, default="CaDeLaC", choices=["CaDeLaC", "LSTM"])
+    parser.add_argument("--nn", type=str, default="CaDeLaC", choices=["CaDeLaC", "LSTM", "LogChol-CaDeLaC"])
     parser.add_argument("--inertia-param", type=str, default="PrincipalTriangular", choices=["PrincipalTriangular", "PrincipalUnconstrained", "SpatialCov", "SpatialSpd", "SpatialLogCholesky"], help="Inertia parametrization",)
     parser.add_argument("--file_type", type=str, default="pkl", choices=["npz", "pkl"])
     parser.add_argument("--epochs", type=int, default=3000)
@@ -351,7 +352,7 @@ if __name__ == "__main__":
     if only_lstm:
         model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + input_values + '_seed_' + str(seed) + '_LSTM'
     else:
-        model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + input_values + '_seed_' + str(seed) + '_' + ','.join(str(x) for x in delan_size)
+        model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + input_values + '_seed_' + str(seed) + '_' + '-'.join(str(x) for x in delan_size)
 
     if nn_id == 'MjxDNEA':
         model_name += '_' + hyper['dyn_parametrization']
@@ -365,12 +366,16 @@ if __name__ == "__main__":
     eval_dataset = create_dataset(test_input_list)
 
     # Construct model:
-    if only_lstm:
-        nn_config = get_lstm_config(hyper)
-        learned_model = LSTMBlackBox(n_dof=nq, config=nn_config)
-    else:
-        nn_config = get_cadelac_pp_config(hyper)
-        learned_model = CaDeLaC(nv_dof_model, nn_config)
+    match nn_id:
+        case "CaDeLaC":
+            nn_config = get_cadelac_pp_config(hyper)
+            learned_model = CaDeLaC(nv_dof_model, nn_config)
+        case "LSTM":
+            nn_config = get_lstm_config(hyper)
+            learned_model = LSTMBlackBox(n_dof=nq, config=nn_config)
+        case "LogChol-CaDeLaC":
+            nn_config = get_cadelac_log_chol_pp_config(hyper)
+            learned_model = CaDeLaCLogChol(nv_dof_model, nn_config)
 
     folder_path = repo_dir + f"/trained_models/{model_folder}"
 
