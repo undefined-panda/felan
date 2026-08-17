@@ -97,7 +97,7 @@ def get_pseudo_inertia_from_log_chol(params):
     m = J[3, 3]
 
     I = jnp.trace(Sigma) * jnp.eye(3) - Sigma
-    return m, h / m, I
+    return m, h, I
 
 def spatial_inertia_from_params(m, h, I):
     """Standard 6x6 spatial inertia in Body-Frame (Featherstone-Konvention)."""
@@ -230,22 +230,24 @@ class DeLaNPotParam(nn.Module):
         v_euler_rates, acc_euler_rates = self.get_euler_rates_and_acc(q_full, qd_full, qdd_full)
 
         dLdq = self.vmap_dLdq_fn(q_full, v_euler_rates, z)[:, :, None]
-        d2L_dqddq, d2Ld2qd = self.vmap_d2L_fn(q_full, v_euler_rates, z) 
+        d2L_dqddq, d2Ld2qd = self.vmap_d2L_fn(q_full, v_euler_rates, z)
+        M, _ = self.get_inertia_matrix(z)
+        qfrc_bias = jnp.matmul(d2L_dqddq.squeeze(), v_euler_rates) - dLdq
 
         # Compute the predicted generalized force:
-        tau_pred = jnp.matmul(d2Ld2qd.squeeze(), acc_euler_rates) + jnp.matmul(d2L_dqddq.squeeze(), v_euler_rates) - dLdq
+        tau_pred = jnp.matmul(d2Ld2qd.squeeze(), acc_euler_rates) + qfrc_bias
 
         tau_pred = self.gen_force_to_angular_frame(q_full, tau_pred).squeeze()
 
         dEdt = jnp.sum(qd_full * tau_pred, axis=1)
 
-        return tau_pred, dEdt
+        return tau_pred, dEdt, M, qfrc_bias
 
     def __call__(self, q, qd, qdd, z):
         out = self.dyn_model(q, qd, qdd, z)
         tau_pred = out[0]
         dEdt = out[1]
-        extras = {}
+        extras = {"M": out[2], "qfrc_bias": out[3]}
         return tau_pred, dEdt, extras
 
 @struct.dataclass
