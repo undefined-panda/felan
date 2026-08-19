@@ -20,3 +20,4 @@ trained_models/
 data/
 *.json
 cluster/
+wandb/

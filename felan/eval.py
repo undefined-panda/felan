@@ -400,6 +400,7 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
     ticks = jnp.array(divider)
     ticks = (ticks[:-1] + ticks[1:]) / 2
 
+    figs = []
     for i in range(0, n_dof, 2):
 
         fig = plt.figure(figsize=(24.0/1.54, 8.0/1.54), dpi=100)
@@ -462,7 +463,10 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         fig.savefig(f"{fig_dir}/joints_torque_{i}_{i+1}.pdf", format="pdf")
         fig.savefig(f"{fig_dir}/joints_torque_{i}_{i+1}.png", format="png")
 
+        figs.append(fig)
+
     if render:
         plt.show()
 
     print("\n################################################\n\n\n")
+    return figs
