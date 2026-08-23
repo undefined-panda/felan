@@ -204,8 +204,8 @@ if __name__ == "__main__":
         raw_train_qp = copy.deepcopy(train_qp)
         raw_test_qp = copy.deepcopy(test_qp)
         
-        train_euler = get_euler_from_pin_quat(raw_train_qp[:,3:7])
-        test_euler = get_euler_from_pin_quat(raw_test_qp[:,3:7])
+        train_euler = get_euler_from_mj_quat(raw_train_qp[:,3:7])
+        test_euler = get_euler_from_mj_quat(raw_test_qp[:,3:7])
         train_qp = jnp.hstack((raw_train_qp[:,0:3], train_euler, raw_train_qp[:,7:]))
         test_qp = jnp.hstack((raw_test_qp[:,0:3], test_euler, raw_test_qp[:,7:]))
 
