@@ -164,7 +164,7 @@ def train_step(state, batch, config: TrainConfig):
 
     return state, loss, metrics
 
-def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None):
+def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None, eval_fn = None):
     # Start Training Loop:
     t0_start = time.perf_counter()
     t_avg_epoch = 0.0
@@ -263,6 +263,9 @@ def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None):
 
                 for k, v in epoch_metrics.items():
                     tb_writer.add_scalar(f"train/{k}", v, epoch)
+
+                if eval_fn is not None:
+                    eval_fn(state, epoch)
 
                 if config.save_checkpoint_model:
                     checkpoints.save_checkpoint(

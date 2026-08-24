@@ -12,14 +12,11 @@ import matplotlib as mp
 from functools import partial
 from jax import random
 
-if os.getenv("DISPLAY"):
-    try:
-        mp.use("Qt5Agg")
-        mp.rc('text', usetex=True)
-        mp.rcParams['text.latex.preamble'] = r'\usepackage{amsmath}'
-
-    except ImportError:
-        pass
+# Non-interactive backend: this script is used for headless/background batch
+# training. Qt5Agg was crashing on exit (SIGSEGV) once wandb's background
+# sync thread touched Qt objects created on the main thread. Figures are
+# still saved to disk (plot_torques) and logged to wandb as images either way.
+mp.use("Agg")
 repo_dir = os.path.dirname(os.path.abspath(__file__))
 
 import wandb
@@ -35,56 +32,6 @@ from felan.eval import *
 from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_cadelac_pp_config
 from felan.models.lstm_black_box import LSTMBlackBox, get_config_from_dict as get_lstm_config
 from felan.models.log_chol_cadelac_pot_param import CaDeLaCLogChol, get_config_from_dict as get_cadelac_log_chol_pp_config
-
-def loss_fn_cadelac(state, params, batch_data, config: TrainConfig):
-    q, qd, qdd, tau, history = batch_data
-    tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd, history)
-
-    err_inv = jnp.sum((tau_hat - tau) ** 2 / config.norm_tau, axis=1)
-    l_mean_inv_dyn = jnp.mean(err_inv)
-    l_var_inv_dyn = jnp.var(err_inv)
-    l_mean_squared_inv_dyn = jnp.mean(err_inv ** 2)
-
-    dEdt = jnp.sum(qd * tau, axis=1)
-    err_dEdt = (dEdt_hat - dEdt) ** 2
-    l_mean_dEdt = jnp.mean(err_dEdt)
-    l_mean_squared_dEdt = jnp.mean(err_dEdt ** 2)
-    l_var_dEdt = jnp.var(err_dEdt)
-
-    loss = l_mean_inv_dyn + (l_mean_dEdt if config.loss_power else 0.0)
-
-    metrics = {
-        'l_mean_inv_dyn': l_mean_inv_dyn,
-        'l_var_inv_dyn': l_var_inv_dyn,
-        'l_mean_squared_inv_dyn': l_mean_squared_inv_dyn,
-        'l_mean_dEdt': l_mean_dEdt,
-        'l_var_dEdt': l_var_dEdt,
-        'l_mean_squared_dEdt': l_mean_squared_dEdt,
-    }
-
-    if config.hyper.get('penalize_extra', False):
-        diff_mass = extras['diff_mass']
-        l_mean_mass = jnp.mean(diff_mass)
-        l_var_mass = jnp.var(diff_mass)
-        loss += config.hyper['penalize_diff_mass'] * l_mean_mass
-        metrics.update({'l_mean_mass': l_mean_mass, 'l_var_mass': l_var_mass})
-
-        diff_rot_eigenvalue = extras['diff_rot_eigenvalue']
-        err_rot_eigenvalue = diff_rot_eigenvalue ** 2
-        l_mean_rot_eigenvalue = jnp.mean(err_rot_eigenvalue)
-        l_var_rot_eigenvalue = jnp.var(err_rot_eigenvalue)
-        loss += config.hyper['penalize_rot_eigenvalue'] * l_mean_rot_eigenvalue
-        metrics.update({
-            'l_mean_rot_eigenvalue': l_mean_rot_eigenvalue,
-            'l_var_rot_eigenvalue': l_var_rot_eigenvalue,
-        })
-
-    for key, value in extras.items():
-        metrics[f"{key}_mean"] = jnp.mean(value)
-        metrics[f"{key}_var"] = jnp.var(value)
-        metrics[f"{key}_max"] = jnp.max(value)
-
-    return loss, metrics
 
 if __name__ == "__main__":
 
@@ -104,6 +51,11 @@ if __name__ == "__main__":
     parser.add_argument("--delan_size", type=int, nargs="+", default=[16,16])
     parser.add_argument("--input_values", type=str, default="joint", choices=["joint", "base", "base_pos_z"])
     parser.add_argument("--seeds", type=int, nargs="+", default=[0])
+    parser.add_argument("--weight_decay", type=float, default=1.e-5, help="AdamW weight decay")
+    parser.add_argument("--lstm_num_layers", type=int, default=5, help="Number of stacked LSTM layers in the context encoder")
+    parser.add_argument("--lstm_hidden_size", type=int, default=10, help="Hidden size of each LSTM layer")
+    parser.add_argument("--lstm_dropout", type=float, default=0.0, help="LSTM dropout rate (logged for reference; not yet wired into the forward pass)")
+    parser.add_argument("--add_noise", action="store_true", default=False, help="Add Gaussian noise to training trajectories for regularization")
 
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
@@ -148,7 +100,7 @@ if __name__ == "__main__":
     skew_sym_ineq = True
     mass_ineq = True
 
-    add_noise_to_load_data = False
+    add_noise_to_load_data = args.add_noise
     pot_net = False
 
     # Model DoF - nq = 6 creates a 6x6 inertia matrix
@@ -186,7 +138,8 @@ if __name__ == "__main__":
         dataset_full_path,
         hist_length=time_window,
         sample_offset=0,
-        seed=seed
+        seed=seed,
+        add_noise=add_noise_to_load_data
     )
 
     (train_labels, train_qp, train_qv, train_qa, train_tau,
@@ -292,7 +245,7 @@ if __name__ == "__main__":
              'net_arch_mlp': [32, 32],
              'n_minibatch': 1024,
              'learning_rate': 5.e-04,
-             'weight_decay': 1.e-5,
+             'weight_decay': args.weight_decay,
              'init_tf': True,
              'act_ld': 'Softplus',
              'softplus_beta': 1.0,
@@ -336,9 +289,9 @@ if __name__ == "__main__":
              'train_labels': train_labels,
              'test_labels': test_labels,
              # LSTM
-             'lstm_hidden_size': 10,
-             'lstm_num_layers': 5,
-             'lstm_dropout': 0.0,
+             'lstm_hidden_size': args.lstm_hidden_size,
+             'lstm_num_layers': args.lstm_num_layers,
+             'lstm_dropout': args.lstm_dropout,
              'time_window': time_window,
              'n_output': 6 if only_lstm else 10,
              #
@@ -366,6 +319,12 @@ if __name__ == "__main__":
         
             if nn_id == 'MjxDNEA':
                 model_name += '_' + hyper['dyn_parametrization']
+
+            model_name += f"_lstm{hyper['lstm_num_layers']}x{hyper['lstm_hidden_size']}_wd{hyper['weight_decay']:.0e}"
+            if hyper['lstm_dropout'] > 0:
+                model_name += f"_drop{hyper['lstm_dropout']}"
+            if add_noise_to_load_data:
+                model_name += '_noise'
 
             model_name += '_seed_' + str(seed)
 
@@ -442,11 +401,45 @@ if __name__ == "__main__":
                                            repo_dir = repo_dir,
                                            save_checkpoint_model = save_checkpoint_model,)
 
+                ############# Generalization Probe (Train vs. Test) #############
+                # Cheap, jitted torque-MSE probe evaluated every `log_period` epochs on
+                # both a train-set cross-section and the full test-set, so the
+                # train/test generalization gap is visible as a curve in wandb/
+                # tensorboard *during* training, not only as a single number at the
+                # end. Strided (not head-sliced) subsampling of the train set so the
+                # probe still covers all training runs/masses, not just the first few.
+                n_train_total = train_dataset[0].shape[0]
+                probe_stride = max(1, n_train_total // 4000)
+                train_probe = tuple(x[::probe_stride] for x in train_dataset)
+                test_probe = (eval_dataset[0], eval_dataset[1], eval_dataset[2], eval_dataset[3], eval_dataset[7])
+
+                @jax.jit
+                def _probe_tau_mse(params, probe):
+                    q, qd, qdd, tau, history = probe
+                    tau_hat, _, _ = learned_model.apply(params, q, qd, qdd, history)
+                    return jnp.mean(jnp.sum((tau_hat - tau) ** 2 / norm_tau, axis=1))
+
+                probe_history = {}
+                def periodic_eval(state, epoch):
+                    train_mse = float(_probe_tau_mse(state.params, train_probe))
+                    test_mse = float(_probe_tau_mse(state.params, test_probe))
+                    tb_writer.add_scalar("generalization/train_tau_mse", train_mse, epoch)
+                    tb_writer.add_scalar("generalization/test_tau_mse", test_mse, epoch)
+                    tb_writer.add_scalar("generalization/gap_tau_mse", test_mse - train_mse, epoch)
+                    probe_history['train'] = train_mse
+                    probe_history['test'] = test_mse
+
                 # Train Model
                 rng, train_rng = jax.random.split(rng, num=2)
-                train_model_state, train_metrics = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer)
+                train_model_state, train_metrics = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer, eval_fn=periodic_eval)
 
                 wandb.log({f"final_train/{k}": v for k, v in train_metrics.items()})
+                if probe_history:
+                    wandb.log({
+                        "final/probe_train_tau_mse": probe_history.get('train'),
+                        "final/probe_test_tau_mse": probe_history.get('test'),
+                        "final/probe_generalization_gap": probe_history.get('test', 0.0) - probe_history.get('train', 0.0),
+                    })
 
                 eval_params = train_model_state.params
                 if save_model:
