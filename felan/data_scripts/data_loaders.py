@@ -60,8 +60,10 @@ def load_dataset(filename="data/datasets/go2_sim_n_runs_50_data_freq_100hz.pkl",
     test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)
     return train_data, test_data, divider, dt_mean
 
-def add_historical_data(hist_length, data, list_key):
-    
+def add_historical_data(hist_length, data, list_key, stride=1, gap=0):
+    span = hist_length * stride
+    n_drop = span + gap  # samples consumed before the first target index
+
     new_data = copy.deepcopy(data)
 
     data_hist = {}
@@ -71,20 +73,28 @@ def add_historical_data(hist_length, data, list_key):
     for key in data.keys():
         if key in list_key:
             for index, run_data in enumerate(data[key]):
-                hist_values = []
-                for i in range(len(run_data)-hist_length):
-                    hist_values.append(run_data[i:(i+hist_length),:])
-                data_hist[key][index] = np.array(hist_values)
+                if len(run_data) <= n_drop:
+                    raise ValueError(
+                        f"run {index} has {len(run_data)} samples, needs more than "
+                        f"span+gap = {n_drop} (hist_length={hist_length}, "
+                        f"stride={stride}, gap={gap})")
+                # (T-span+1, C, span) -> (T-span+1, span, C) -> every stride-th point.
+                # Views, not copies -- the np.vstack downstream materializes them once.
+                wins = np.lib.stride_tricks.sliding_window_view(run_data, span, axis=0)
+                wins = np.moveaxis(wins, -1, 1)[:, ::stride]
+                # window i covers [i, i+span), its target is sample i+span+gap
+                data_hist[key][index] = wins[:len(run_data) - n_drop]
 
-        # Delete data before hist_length
+        # Drop the leading samples that have no complete window in front of them
         if key != 'labels':
             for index, run_data in enumerate(data[key]):
-                new_data[key][index] = new_data[key][index][hist_length:]
-    
+                new_data[key][index] = new_data[key][index][n_drop:]
+
     return new_data, data_hist
 
 def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_length = 0,
-                        add_noise = False, train_size=0.75, seed=None):
+                        add_noise = False, train_size=0.75, seed=None,
+                        hist_stride = 1, hist_gap = 0):
 
     raw = np.load(filename)
 
@@ -135,26 +145,25 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     }
 
     if add_noise:
-        var_qp = np.zeros(7)
-        var_qv = 0.001 * np.ones(7)
-        var_qa = [0.05, 0.05, 0.15, 0.03, 0.15, 0.25, 0.65]
-        var_tau_read = [0.5, 0.1, 0.5, 0.3, 0.01, 0.01, 0.01]
-        var_diff_tau_nom_pin = [1.0, 0.5, 1.0, 0.4, 0.02, 0.03, 0.02]
-
+        # Noise scaled relative to each field's own per-run std, rather than
+        # hard-coded per-dimension variances (those were sized for a 7-dof
+        # dataset and silently break with a shape-mismatch on datasets whose
+        # qv/qa/tau/diff_tau dimensions differ, e.g. this 6/6/12/6-dim
+        # quadruped-base dataset).
+        noise_rel_std = 0.01
         for run in range(len(data['qp'])):
-            data["qp"][run] = data["qp"][run] + np.random.normal(0, np.sqrt(var_qp), data["qp"][run].shape)
-            data["qv"][run] = data["qv"][run] + np.random.normal(0, np.sqrt(var_qv), data["qv"][run].shape)
-            data["qa"][run] = data["qa"][run] + np.random.normal(0, np.sqrt(var_qa), data["qa"][run].shape)
-            data["tau"][run] = data["tau"][run] + np.random.normal(0, np.sqrt(var_tau_read), data["qv"][run].shape)
-            data["diff_tau"][run] = data["diff_tau"][run] + np.random.normal(0, np.sqrt(var_diff_tau_nom_pin), data["diff_tau"][run].shape)
+            for key in ("qp", "qv", "qa", "tau", "diff_tau"):
+                field = data[key][run]
+                field_std = np.std(field, axis=0, keepdims=True)
+                data[key][run] = field + np.random.normal(0, noise_rel_std * field_std, field.shape)
 
         print("\n################################################")
-        print('Real robot noise added to data.')
+        print('Gaussian noise (1% of per-channel std) added to training data.')
         print("################################################")
 
     if hist_length > 0:
-        data, data_hist = add_historical_data(hist_length, data, list_key=["joint_pos", "joint_vel", "diff_tau",
-                                                                           "base_orient", "base_vel", "base_ang_vel", "base_pos_z"])
+        data, data_hist = add_historical_data(hist_length, data, list_key=["joint_pos", "joint_vel", "diff_tau", "base_orient", "base_vel", "base_ang_vel", "base_pos_z"],
+                                              stride=hist_stride, gap=hist_gap)
 
     # Split the dataset in train and test set:
     rng = np.random.default_rng(seed)
@@ -238,3 +247,28 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
         test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)
 
     return train_data, test_data, divider, dt_mean, test_base_mass
+
+
+def estimate_nominal_base_mass(raw):
+    """Recover the payload-free base mass from a quad_mass dataset.
+
+    The previous approach -- min(base_mass) over all runs -- is biased: the
+    generator samples the payload as mass_offset ~ U(0, 5) kg, so the lightest
+    *sampled* run still carries a payload (0.168 kg on run7), and every mass
+    error measured against it inherits that offset as a constant floor.
+
+    The residual gravity torque gives an unbiased estimate instead: the base-z
+    channel of diff_tau is (base_mass - nominal_mass) * g up to zero-mean gait
+    noise, so regressing mean(diff_tau_z)/g on base_mass over all runs yields a
+    line whose root is the nominal mass. The fitted slope is a built-in sanity
+    check -- it must come out at ~1.0.
+
+    Returns (nominal_mass [kg], fitted_slope).
+    """
+    base_mass = raw['base_mass'].mean(axis=1)
+    diff_tau_z = (raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., 2]
+    payload_hat = diff_tau_z.mean(axis=1) / 9.81
+
+    A = np.vstack([base_mass, np.ones_like(base_mass)]).T
+    slope, intercept = np.linalg.lstsq(A, payload_hat, rcond=None)[0]
+    return float(-intercept / slope), float(slope)

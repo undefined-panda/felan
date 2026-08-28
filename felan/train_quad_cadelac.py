@@ -33,6 +33,12 @@ from felan.models.cadelac_pot_param import CaDeLaC, get_config_from_dict as get_
 from felan.models.lstm_black_box import LSTMBlackBox, get_config_from_dict as get_lstm_config
 from felan.models.log_chol_cadelac_pot_param import CaDeLaCLogChol, get_config_from_dict as get_cadelac_log_chol_pp_config
 
+def dt_mean_probe(dataset_full_path):
+    t = np.load(dataset_full_path)["time"]
+    dt = np.diff(t, axis=-1)
+    assert np.var(dt) < 1e-12, "dataset has a non-constant logging period"
+    return float(np.mean(dt))
+
 if __name__ == "__main__":
 
     # Read Command Line Arguments:
@@ -56,6 +62,9 @@ if __name__ == "__main__":
     parser.add_argument("--lstm_hidden_size", type=int, default=10, help="Hidden size of each LSTM layer")
     parser.add_argument("--lstm_dropout", type=float, default=0.0, help="LSTM dropout rate (logged for reference; not yet wired into the forward pass)")
     parser.add_argument("--add_noise", action="store_true", default=False, help="Add Gaussian noise to training trajectories for regularization")
+    parser.add_argument("--history_span_s", type=float, default=0.5, help="Wall-clock span of the LSTM context window [s]")
+    parser.add_argument("--history_stride", type=int, default=4, help="Spacing between context-window samples [samples]")
+    parser.add_argument("--history_gap", type=int, default=10, help="Samples skipped between the end of the context window and the target")
 
     args = parser.parse_args()
     seed, cuda, render, load_model, save_model = init_env(parser.parse_args())
@@ -115,7 +124,7 @@ if __name__ == "__main__":
             'spot_real':    'spot_real_freq_100hz',
             'spot_arm_real':'spot_arm_real_freq_100hz',
             'hyqreal2':     'hyqreal2_real_freq_100hz',
-            'aliengo':      'quad_mass_dataset_run7'
+            'aliengo':      'quad_mass_dataset_run8'
         }
     
     dataset_name = dataset_map[robot_prefix]
@@ -132,14 +141,21 @@ if __name__ == "__main__":
 
     model_folder = str(robot_prefix) + '/' + nn_id
 
-    time_window = 15
+    f_log = 1.0 / dt_mean_probe(dataset_full_path)
+    history_stride = args.history_stride
+    history_gap = args.history_gap
+    time_window = max(1, int(round(args.history_span_s * f_log / history_stride)))
+    print(f"# Context: {args.history_span_s}s @ {f_log:.1f}Hz / stride {history_stride} "
+          f"-> time_window = {time_window} points, gap = {history_gap} samples")
 
     train_data, test_data, divider, dt_mean, test_base_mass = load_custom_dataset(
         dataset_full_path,
         hist_length=time_window,
         sample_offset=0,
         seed=seed,
-        add_noise=add_noise_to_load_data
+        add_noise=add_noise_to_load_data,
+        hist_stride=history_stride,
+        hist_gap=history_gap,
     )
 
     (train_labels, train_qp, train_qv, train_qa, train_tau,
@@ -293,6 +309,10 @@ if __name__ == "__main__":
              'lstm_num_layers': args.lstm_num_layers,
              'lstm_dropout': args.lstm_dropout,
              'time_window': time_window,
+             'history_stride': history_stride,
+             'history_gap': history_gap,
+             'history_span_s': args.history_span_s,
+             'f_log': f_log,
              'n_output': 6 if only_lstm else 10,
              #
              'max_epoch': epochs
@@ -321,13 +341,14 @@ if __name__ == "__main__":
                 model_name += '_' + hyper['dyn_parametrization']
 
             model_name += f"_lstm{hyper['lstm_num_layers']}x{hyper['lstm_hidden_size']}_wd{hyper['weight_decay']:.0e}"
+            model_name += f"_span{hyper['history_span_s']}s-stride{hyper['history_stride']}-gap{hyper['history_gap']}"
             if hyper['lstm_dropout'] > 0:
                 model_name += f"_drop{hyper['lstm_dropout']}"
             if add_noise_to_load_data:
                 model_name += '_noise'
 
             model_name += '_seed_' + str(seed)
-
+            wandb.run.name = model_name
             wandb.config.update(hyper, allow_val_change=True)
 
             rng = jax.random.PRNGKey(seed)
