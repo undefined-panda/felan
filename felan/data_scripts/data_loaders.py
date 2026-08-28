@@ -135,21 +135,20 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
     }
 
     if add_noise:
-        var_qp = np.zeros(7)
-        var_qv = 0.001 * np.ones(7)
-        var_qa = [0.05, 0.05, 0.15, 0.03, 0.15, 0.25, 0.65]
-        var_tau_read = [0.5, 0.1, 0.5, 0.3, 0.01, 0.01, 0.01]
-        var_diff_tau_nom_pin = [1.0, 0.5, 1.0, 0.4, 0.02, 0.03, 0.02]
-
+        # Noise scaled relative to each field's own per-run std, rather than
+        # hard-coded per-dimension variances (those were sized for a 7-dof
+        # dataset and silently break with a shape-mismatch on datasets whose
+        # qv/qa/tau/diff_tau dimensions differ, e.g. this 6/6/12/6-dim
+        # quadruped-base dataset).
+        noise_rel_std = 0.01
         for run in range(len(data['qp'])):
-            data["qp"][run] = data["qp"][run] + np.random.normal(0, np.sqrt(var_qp), data["qp"][run].shape)
-            data["qv"][run] = data["qv"][run] + np.random.normal(0, np.sqrt(var_qv), data["qv"][run].shape)
-            data["qa"][run] = data["qa"][run] + np.random.normal(0, np.sqrt(var_qa), data["qa"][run].shape)
-            data["tau"][run] = data["tau"][run] + np.random.normal(0, np.sqrt(var_tau_read), data["qv"][run].shape)
-            data["diff_tau"][run] = data["diff_tau"][run] + np.random.normal(0, np.sqrt(var_diff_tau_nom_pin), data["diff_tau"][run].shape)
+            for key in ("qp", "qv", "qa", "tau", "diff_tau"):
+                field = data[key][run]
+                field_std = np.std(field, axis=0, keepdims=True)
+                data[key][run] = field + np.random.normal(0, noise_rel_std * field_std, field.shape)
 
         print("\n################################################")
-        print('Real robot noise added to data.')
+        print('Gaussian noise (1% of per-channel std) added to training data.')
         print("################################################")
 
     if hist_length > 0:
