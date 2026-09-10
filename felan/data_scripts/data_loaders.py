@@ -1,6 +1,7 @@
 import dill as pickle
 import numpy as np
 import copy
+# change
 
 def load_dataset(filename="data/datasets/go2_sim_n_runs_50_data_freq_100hz.pkl", test_label=["env_0_run_0","env_0_run_1","env_0_run_2"],
                 sample_offset = 0, final_sample_offset = 0, dataset_use = 1.0, nq_dof = 31,
@@ -60,160 +61,100 @@ def load_dataset(filename="data/datasets/go2_sim_n_runs_50_data_freq_100hz.pkl",
     test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)
     return train_data, test_data, divider, dt_mean
 
-def add_historical_data(hist_length, data, list_key, stride=1, gap=0):
-    span = hist_length * stride
-    n_drop = span + gap  # samples consumed before the first target index
+def load_custom_dataset(filename, sample_offset = 0, hist_length = 0, seed=None,
+                            train_size=0.85, hist_stride = 1, history_input = "joint",
+                            nq_dof = 19, nv_dof = 18):
+    
+    def create_historical_data(data, hist_length, list_key, stride=1):
+        data_hist = {}
+        span = hist_length * stride
+        for key in list_key:
+            data_hist[key] = [[] for _ in range(len(data[key]))]
 
-    new_data = copy.deepcopy(data)
+            for i, run_data in enumerate(data[key]):
+                window = np.lib.stride_tricks.sliding_window_view(run_data, window_shape=span, axis=0)
+                strided_window = np.moveaxis(window, -1, 1)[:, ::stride]
+                data_hist[key][i] = strided_window[:len(run_data) - span]
 
-    data_hist = {}
-    for key in list_key:
-        data_hist[key] = [[] for _ in range(len(data[key]))]
-
-    for key in data.keys():
-        if key in list_key:
-            for index, run_data in enumerate(data[key]):
-                if len(run_data) <= n_drop:
-                    raise ValueError(
-                        f"run {index} has {len(run_data)} samples, needs more than "
-                        f"span+gap = {n_drop} (hist_length={hist_length}, "
-                        f"stride={stride}, gap={gap})")
-                # (T-span+1, C, span) -> (T-span+1, span, C) -> every stride-th point.
-                # Views, not copies -- the np.vstack downstream materializes them once.
-                wins = np.lib.stride_tricks.sliding_window_view(run_data, span, axis=0)
-                wins = np.moveaxis(wins, -1, 1)[:, ::stride]
-                # window i covers [i, i+span), its target is sample i+span+gap
-                data_hist[key][index] = wins[:len(run_data) - n_drop]
-
-        # Drop the leading samples that have no complete window in front of them
-        if key != 'labels':
-            for index, run_data in enumerate(data[key]):
-                new_data[key][index] = new_data[key][index][n_drop:]
-
-    return new_data, data_hist
-
-def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_length = 0,
-                        add_noise = False, train_size=0.75, seed=None,
-                        hist_stride = 1, hist_gap = 0):
-
+        return data_hist
+    
     raw = np.load(filename)
-
-    qp = np.concatenate([raw['base_pos'], raw['base_orient']], axis=-1)
-    base_pos_z = raw["base_pos"][..., 2:3]
-    joint_pos = raw["joint_pos"]
-    base_orient = raw["base_orient"]
-    joint_vel = raw["joint_vel"]
-    base_vel = raw["base_vel"]
-    base_ang_vel = raw["base_ang_vel"]
-    qv = np.concatenate([raw['base_vel'], raw['base_ang_vel']], axis=-1)
-    qa = raw['base_acc']
-    tau = raw['joint_torque']
-    diff_tau = (raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., :6]
-    tau_m_all = raw['tau_m'][..., :6]
-    tau_c_all = raw['tau_c'][..., :6]
-    tau_g_all = raw['tau_g'][..., :6]
-    diff_tau_m_all = raw['diff_tau_m_nom'][..., :6]
-    diff_tau_c_all = raw['diff_tau_c_nom'][..., :6]
-    diff_tau_g_all = raw['diff_tau_g_nom'][..., :6]
-    time_all = raw['time']
+    n_runs = raw["base_pos"].shape[0]
     base_mass = raw['base_mass'].mean(axis=1)
 
-    n_runs = qp.shape[0]
-    labels_all = [f'run_{i}' for i in range(n_runs)]
-
+    # to keep it similar as load_dataset
     data = {
-        'labels': labels_all,
-        'qp': [qp[i] for i in range(n_runs)],
-        'base_pos_z': [base_pos_z[i] for i in range(n_runs)],
-        'joint_pos': [joint_pos[i] for i in range(n_runs)],
-        'base_orient': [base_orient[i] for i in range(n_runs)],
-        'qv': [qv[i] for i in range(n_runs)],
-        'joint_vel': [joint_vel[i] for i in range(n_runs)],
-        'base_vel': [base_vel[i] for i in range(n_runs)],
-        'base_ang_vel': [base_ang_vel[i] for i in range(n_runs)],
-        'qa': [qa[i] for i in range(n_runs)],
-        'tau': [tau[i] for i in range(n_runs)],
-        'diff_tau': [diff_tau[i] for i in range(n_runs)],
-        'diff_tau_nom': [diff_tau[i] for i in range(n_runs)],
-        'tau_m': [tau_m_all[i] for i in range(n_runs)],
-        'tau_c': [tau_c_all[i] for i in range(n_runs)],
-        'tau_g': [tau_g_all[i] for i in range(n_runs)],
-        'diff_tau_m': [diff_tau_m_all[i] for i in range(n_runs)],
-        'diff_tau_c': [diff_tau_c_all[i] for i in range(n_runs)],
-        'diff_tau_g': [diff_tau_g_all[i] for i in range(n_runs)],
-        'time': [time_all[i] for i in range(n_runs)],
+        'labels': [f'run_{i}' for i in range(n_runs)],
+        'time': [raw['time'][i] for i in range(n_runs)],
+
+        'qp': [np.concatenate([raw['base_pos'], raw['base_orient']],   axis=-1)[i] for i in range(n_runs)],
+        'qv': [np.concatenate([raw['base_vel'], raw['base_ang_vel']],  axis=-1)[i] for i in range(n_runs)],
+        'qa': [np.concatenate([raw['base_acc']],                       axis=-1)[i] for i in range(n_runs)],
+
+        'diff_tau': [(raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., :6][i] for i in range(n_runs)],
+        'diff_tau_m': [raw['diff_tau_m_nom'][..., :6][i] for i in range(n_runs)],
+        'diff_tau_c': [raw['diff_tau_c_nom'][..., :6][i] for i in range(n_runs)],
+        'diff_tau_g': [raw['diff_tau_g_nom'][..., :6][i] for i in range(n_runs)],
+
+        'joint_pos': [raw['joint_pos'][i] for i in range(n_runs)],
+        'joint_vel': [raw['joint_vel'][i] for i in range(n_runs)],
+        'base_orient': [raw['base_orient'][i] for i in range(n_runs)],
+        'base_vel': [raw['base_vel'][i] for i in range(n_runs)],
+        'base_ang_vel': [raw['base_ang_vel'][i] for i in range(n_runs)],
     }
 
-    if add_noise:
-        # Noise scaled relative to each field's own per-run std, rather than
-        # hard-coded per-dimension variances (those were sized for a 7-dof
-        # dataset and silently break with a shape-mismatch on datasets whose
-        # qv/qa/tau/diff_tau dimensions differ, e.g. this 6/6/12/6-dim
-        # quadruped-base dataset).
-        noise_rel_std = 0.01
-        for run in range(len(data['qp'])):
-            for key in ("qp", "qv", "qa", "tau", "diff_tau"):
-                field = data[key][run]
-                field_std = np.std(field, axis=0, keepdims=True)
-                data[key][run] = field + np.random.normal(0, noise_rel_std * field_std, field.shape)
+    if history_input == "joint":
+        list_key = ["joint_pos", "joint_vel", "diff_tau"]
+    else:
+        list_key = ["base_orient", "base_vel", "base_ang_vel", "diff_tau"]
 
-        print("\n################################################")
-        print('Gaussian noise (1% of per-channel std) added to training data.')
-        print("################################################")
-
-    if hist_length > 0:
-        data, data_hist = add_historical_data(hist_length, data, list_key=["joint_pos", "joint_vel", "diff_tau", "base_orient", "base_vel", "base_ang_vel", "base_pos_z"],
-                                              stride=hist_stride, gap=hist_gap)
+    data_hist = create_historical_data(data, hist_length, list_key, stride=hist_stride)
 
     # Split the dataset in train and test set:
     rng = np.random.default_rng(seed)
     n_test = int(n_runs * (1 - train_size))
     test_run_indices = rng.choice(np.arange(n_runs), n_test, replace=False)
-    test_label = [labels_all[i] for i in test_run_indices]
-
+    test_label = [data["labels"][i] for i in test_run_indices]
     test_idx = [data["labels"].index(x) for x in test_label]
 
     dt = np.concatenate([data["time"][idx][1:] - data["time"][idx][:-1] for idx in test_idx])
-    dt_mean, dt_var = np.mean(dt), np.var(dt)
-    assert dt_var < 1.e-12
+    dt_mean, _ = np.mean(dt), np.var(dt)
 
-    train_labels, test_labels = [], []
-    train_qp, train_qv, train_qa, train_tau = np.zeros((0, 7)), np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
-
-    test_qp, test_qv, test_qa, test_tau = np.zeros((0, 7)), np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
+    train_qp, train_qv, train_qa, train_tau = np.zeros((0, nq_dof)), np.zeros((0, nv_dof)), np.zeros((0, nv_dof)), np.zeros((0, 6))
+    test_qp, test_qv, test_qa, test_tau = np.zeros((0, nq_dof)), np.zeros((0, nv_dof)), np.zeros((0, nv_dof)), np.zeros((0, 6))
     test_m, test_c, test_g = np.zeros((0, 6)), np.zeros((0, 6)), np.zeros((0, 6))
 
-    if hist_length > 0:
-        train_hist_qp, train_hist_qv, train_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
-        train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_base_pos_z = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 1))
-        test_hist_qp, test_hist_qv, test_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
-        test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_base_pos_z = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 1))
-
-    divider = [0, ]   # Contains idx between characters for plotting
+    train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
+    train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3))
+    test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau_nom = np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 12)), np.zeros((0, hist_length, 6))
+    test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel = np.zeros((0, hist_length, 4)), np.zeros((0, hist_length, 3)), np.zeros((0, hist_length, 3))
+    
+    divider = [0, ]
     test_base_mass = []
+    train_labels, test_labels = [], []
 
-    for i in range(int(dataset_use*len(data["labels"]))):
-
+    for i in range(int(len(data["labels"]))):
         if i in test_idx:
             test_labels.append(data["labels"][i])
             test_qp = np.vstack((test_qp, data["qp"][i][sample_offset:]))
             test_qv = np.vstack((test_qv, data["qv"][i][sample_offset:]))
             test_qa = np.vstack((test_qa, data["qa"][i][sample_offset:]))
-
             test_tau = np.vstack((test_tau, data["diff_tau"][i][sample_offset:]))
 
             test_m = np.vstack((test_m, data["diff_tau_m"][i][sample_offset:]))
             test_c = np.vstack((test_c, data["diff_tau_c"][i][sample_offset:]))
             test_g = np.vstack((test_g, data["diff_tau_g"][i][sample_offset:]))
 
-            if hist_length > 0:
-                test_hist_qp = np.vstack((test_hist_qp, data_hist["joint_pos"][i][sample_offset:]))
-                test_hist_qv = np.vstack((test_hist_qv, data_hist["joint_vel"][i][sample_offset:]))
-                test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+            # add target to the end
+            if history_input == "joint":
+                test_hist_joint_pos = np.vstack((test_hist_joint_pos, data_hist["joint_pos"][i][sample_offset:]))
+                test_hist_joint_vel = np.vstack((test_hist_joint_vel, data_hist["joint_vel"][i][sample_offset:]))
+            else: # base
                 test_hist_base_orient = np.vstack((test_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
                 test_hist_base_vel = np.vstack((test_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
                 test_hist_base_ang_vel = np.vstack((test_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
-                test_hist_base_pos_z = np.vstack((test_hist_base_pos_z, data_hist["base_pos_z"][i][sample_offset:]))
+
+            test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
 
             divider.append(test_qp.shape[0])
             test_base_mass.append(base_mass[i])
@@ -226,49 +167,24 @@ def load_custom_dataset(filename, sample_offset = 0, dataset_use = 1.0,hist_leng
 
             train_tau = np.vstack((train_tau, data["diff_tau"][i][sample_offset:]))
 
-            if hist_length > 0:
-                train_hist_qp = np.vstack((train_hist_qp, data_hist["joint_pos"][i][sample_offset:]))
-                train_hist_qv = np.vstack((train_hist_qv, data_hist["joint_vel"][i][sample_offset:]))
-                train_hist_diff_tau_nom = np.vstack((train_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+            if history_input == "joint":
+                train_hist_joint_pos = np.vstack((train_hist_joint_pos, data_hist["joint_pos"][i][sample_offset:]))
+                train_hist_joint_vel = np.vstack((train_hist_joint_vel, data_hist["joint_vel"][i][sample_offset:]))
+            else: # base
                 train_hist_base_orient = np.vstack((train_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
                 train_hist_base_vel = np.vstack((train_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
                 train_hist_base_ang_vel = np.vstack((train_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
-                train_hist_base_pos_z = np.vstack((train_hist_base_pos_z, data_hist["base_pos_z"][i][sample_offset:]))
 
-    if hist_length > 0:
-        train_data = (train_labels, train_qp, train_qv, train_qa, train_tau, \
-                    train_hist_qp, train_hist_qv, train_hist_diff_tau_nom, \
-                    train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_base_pos_z)
-        test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, \
-                    test_hist_qp, test_hist_qv, test_hist_diff_tau_nom, \
-                    test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_base_pos_z)
+            train_hist_diff_tau_nom = np.vstack((train_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+
+    if history_input == "joint":
+        train_history = np.concatenate([train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau_nom],axis=-1)
+        test_history = np.concatenate([test_hist_joint_pos, test_hist_joint_vel, test_hist_diff_tau_nom],axis=-1)
     else:
-        train_data = (train_labels, train_qp, train_qv, train_qa, train_tau)
-        test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g)
+        train_history = np.concatenate([train_hist_base_orient, train_hist_base_vel, train_hist_base_ang_vel, train_hist_diff_tau_nom], axis=-1)
+        test_history = np.concatenate([test_hist_base_orient, test_hist_base_vel, test_hist_base_ang_vel, test_hist_diff_tau_nom],axis=-1)
+
+    train_data = (train_labels, train_qp, train_qv, train_qa, train_tau, train_history)
+    test_data = (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history)
 
     return train_data, test_data, divider, dt_mean, test_base_mass
-
-
-def estimate_nominal_base_mass(raw):
-    """Recover the payload-free base mass from a quad_mass dataset.
-
-    The previous approach -- min(base_mass) over all runs -- is biased: the
-    generator samples the payload as mass_offset ~ U(0, 5) kg, so the lightest
-    *sampled* run still carries a payload (0.168 kg on run7), and every mass
-    error measured against it inherits that offset as a constant floor.
-
-    The residual gravity torque gives an unbiased estimate instead: the base-z
-    channel of diff_tau is (base_mass - nominal_mass) * g up to zero-mean gait
-    noise, so regressing mean(diff_tau_z)/g on base_mass over all runs yields a
-    line whose root is the nominal mass. The fitted slope is a built-in sanity
-    check -- it must come out at ~1.0.
-
-    Returns (nominal_mass [kg], fitted_slope).
-    """
-    base_mass = raw['base_mass'].mean(axis=1)
-    diff_tau_z = (raw['diff_tau_m_nom'] + raw['diff_tau_c_nom'] + raw['diff_tau_g_nom'])[..., 2]
-    payload_hat = diff_tau_z.mean(axis=1) / 9.81
-
-    A = np.vstack([base_mass, np.ones_like(base_mass)]).T
-    slope, intercept = np.linalg.lstsq(A, payload_hat, rcond=None)[0]
-    return float(-intercept / slope), float(slope)
