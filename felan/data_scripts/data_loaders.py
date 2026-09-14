@@ -62,19 +62,18 @@ def load_dataset(filename="data/datasets/go2_sim_n_runs_50_data_freq_100hz.pkl",
     return train_data, test_data, divider, dt_mean
 
 def load_custom_dataset(filename, sample_offset = 0, hist_length = 0, seed=None,
-                            train_size=0.85, hist_stride = 1, history_input = "joint",
-                            nq_dof = 19, nv_dof = 18):
+                        train_size=0.75, hist_stride = 1, history_input = "joint",
+                        nq_dof = 19, nv_dof = 18):
     
     def create_historical_data(data, hist_length, list_key, stride=1):
         data_hist = {}
         span = hist_length * stride
         for key in list_key:
             data_hist[key] = [[] for _ in range(len(data[key]))]
-
             for i, run_data in enumerate(data[key]):
                 window = np.lib.stride_tricks.sliding_window_view(run_data, window_shape=span, axis=0)
                 strided_window = np.moveaxis(window, -1, 1)[:, ::stride]
-                data_hist[key][i] = strided_window[:len(run_data) - span]
+                data_hist[key][i] = strided_window
 
         return data_hist
     
@@ -109,11 +108,18 @@ def load_custom_dataset(filename, sample_offset = 0, hist_length = 0, seed=None,
         list_key = ["base_orient", "base_vel", "base_ang_vel", "diff_tau"]
 
     data_hist = create_historical_data(data, hist_length, list_key, stride=hist_stride)
+    span = hist_length * hist_stride
+    hist_offset = span
 
     # Split the dataset in train and test set:
     rng = np.random.default_rng(seed)
-    n_test = int(n_runs * (1 - train_size))
-    test_run_indices = rng.choice(np.arange(n_runs), n_test, replace=False)
+    # n_test = int(n_runs * (1 - train_size))
+    # test_run_indices = rng.choice(np.arange(n_runs), n_test, replace=False)
+    payloads = np.unique(np.round(base_mass, 6))
+    n_test_p = max(1, int(round(len(payloads) * (1 - train_size))))
+    test_payloads = rng.choice(payloads, n_test_p, replace=False)
+    test_run_indices = np.where(np.isin(np.round(base_mass, 6), test_payloads))[0]
+
     test_label = [data["labels"][i] for i in test_run_indices]
     test_idx = [data["labels"].index(x) for x in test_label]
 
@@ -134,48 +140,53 @@ def load_custom_dataset(filename, sample_offset = 0, hist_length = 0, seed=None,
     train_labels, test_labels = [], []
 
     for i in range(int(len(data["labels"]))):
+        target_start = sample_offset + hist_offset
+        n_valid = len(data["qp"][i]) - hist_offset - sample_offset
+        hist_slice = slice(sample_offset, sample_offset + n_valid)
+        target_slice = slice(target_start, target_start + n_valid)
+
         if i in test_idx:
             test_labels.append(data["labels"][i])
-            test_qp = np.vstack((test_qp, data["qp"][i][sample_offset:]))
-            test_qv = np.vstack((test_qv, data["qv"][i][sample_offset:]))
-            test_qa = np.vstack((test_qa, data["qa"][i][sample_offset:]))
-            test_tau = np.vstack((test_tau, data["diff_tau"][i][sample_offset:]))
+            test_qp = np.vstack((test_qp, data["qp"][i][target_slice]))
+            test_qv = np.vstack((test_qv, data["qv"][i][target_slice]))
+            test_qa = np.vstack((test_qa, data["qa"][i][target_slice]))
+            test_tau = np.vstack((test_tau, data["diff_tau"][i][target_slice]))
 
-            test_m = np.vstack((test_m, data["diff_tau_m"][i][sample_offset:]))
-            test_c = np.vstack((test_c, data["diff_tau_c"][i][sample_offset:]))
-            test_g = np.vstack((test_g, data["diff_tau_g"][i][sample_offset:]))
+            test_m = np.vstack((test_m, data["diff_tau_m"][i][target_slice]))
+            test_c = np.vstack((test_c, data["diff_tau_c"][i][target_slice]))
+            test_g = np.vstack((test_g, data["diff_tau_g"][i][target_slice]))
 
             # add target to the end
             if history_input == "joint":
-                test_hist_joint_pos = np.vstack((test_hist_joint_pos, data_hist["joint_pos"][i][sample_offset:]))
-                test_hist_joint_vel = np.vstack((test_hist_joint_vel, data_hist["joint_vel"][i][sample_offset:]))
+                test_hist_joint_pos = np.vstack((test_hist_joint_pos, data_hist["joint_pos"][i][hist_slice]))
+                test_hist_joint_vel = np.vstack((test_hist_joint_vel, data_hist["joint_vel"][i][hist_slice]))
             else: # base
-                test_hist_base_orient = np.vstack((test_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
-                test_hist_base_vel = np.vstack((test_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
-                test_hist_base_ang_vel = np.vstack((test_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
+                test_hist_base_orient = np.vstack((test_hist_base_orient, data_hist["base_orient"][i][hist_slice]))
+                test_hist_base_vel = np.vstack((test_hist_base_vel, data_hist["base_vel"][i][hist_slice]))
+                test_hist_base_ang_vel = np.vstack((test_hist_base_ang_vel, data_hist["base_ang_vel"][i][hist_slice]))
 
-            test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+            test_hist_diff_tau_nom = np.vstack((test_hist_diff_tau_nom, data_hist["diff_tau"][i][hist_slice]))
 
             divider.append(test_qp.shape[0])
             test_base_mass.append(base_mass[i])
 
         else:
             train_labels.append(data["labels"][i])
-            train_qp = np.vstack((train_qp, data["qp"][i][sample_offset:]))
-            train_qv = np.vstack((train_qv, data["qv"][i][sample_offset:]))
-            train_qa = np.vstack((train_qa, data["qa"][i][sample_offset:]))
+            train_qp = np.vstack((train_qp, data["qp"][i][target_slice]))
+            train_qv = np.vstack((train_qv, data["qv"][i][target_slice]))
+            train_qa = np.vstack((train_qa, data["qa"][i][target_slice]))
 
-            train_tau = np.vstack((train_tau, data["diff_tau"][i][sample_offset:]))
+            train_tau = np.vstack((train_tau, data["diff_tau"][i][target_slice]))
 
             if history_input == "joint":
-                train_hist_joint_pos = np.vstack((train_hist_joint_pos, data_hist["joint_pos"][i][sample_offset:]))
-                train_hist_joint_vel = np.vstack((train_hist_joint_vel, data_hist["joint_vel"][i][sample_offset:]))
+                train_hist_joint_pos = np.vstack((train_hist_joint_pos, data_hist["joint_pos"][i][hist_slice]))
+                train_hist_joint_vel = np.vstack((train_hist_joint_vel, data_hist["joint_vel"][i][hist_slice]))
             else: # base
-                train_hist_base_orient = np.vstack((train_hist_base_orient, data_hist["base_orient"][i][sample_offset:]))
-                train_hist_base_vel = np.vstack((train_hist_base_vel, data_hist["base_vel"][i][sample_offset:]))
-                train_hist_base_ang_vel = np.vstack((train_hist_base_ang_vel, data_hist["base_ang_vel"][i][sample_offset:]))
+                train_hist_base_orient = np.vstack((train_hist_base_orient, data_hist["base_orient"][i][hist_slice]))
+                train_hist_base_vel = np.vstack((train_hist_base_vel, data_hist["base_vel"][i][hist_slice]))
+                train_hist_base_ang_vel = np.vstack((train_hist_base_ang_vel, data_hist["base_ang_vel"][i][hist_slice]))
 
-            train_hist_diff_tau_nom = np.vstack((train_hist_diff_tau_nom, data_hist["diff_tau"][i][sample_offset:]))
+            train_hist_diff_tau_nom = np.vstack((train_hist_diff_tau_nom, data_hist["diff_tau"][i][hist_slice]))
 
     if history_input == "joint":
         train_history = np.concatenate([train_hist_joint_pos, train_hist_joint_vel, train_hist_diff_tau_nom],axis=-1)

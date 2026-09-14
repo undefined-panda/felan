@@ -29,7 +29,7 @@ from felan.train import *
 from felan.eval import *
 
 from felan.models.lstm_black_box import LSTMBlackBox, get_config_from_dict as get_lstm_config
-from felan.models.cadelan_pot_param import CaDeLaN, get_config_from_dict as get_cadelan_pp_config
+from felan.models.cadelan_pot_param import CaDeLaN, get_config_from_dict as get_cadelan_pp_config, LogCholCaDeLaN
 
 if __name__ == "__main__":
 
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", nargs=1, type=int, required=False, default=[0, ], help="Load the model")
     parser.add_argument("-m", nargs=1, type=int, required=False, default=[1, ], help="Save the model")
     parser.add_argument("--epochs", type=int, default=3000)
-    parser.add_argument("--nn", type=str, default="LSTM", choices=["LSTM", "CaDeLaN"])
+    parser.add_argument("--nn", type=str, default="LSTM", choices=["LSTM", "CaDeLaN", "LogCholCaDeLaN"])
     parser.add_argument("--lstm_num_layers", type=int, default=5, help="Number of stacked LSTM layers in the context encoder")
     parser.add_argument("--lstm_hidden_size", type=int, default=10, help="Hidden size of each LSTM layer")
     parser.add_argument("--delan_size", type=int, nargs="+", default=[16,16])
@@ -61,6 +61,7 @@ if __name__ == "__main__":
     history_span = args.history_span
     history_stride = args.history_stride
     history_input = args.history_input
+    use_log_chol = nn_id == "LogCholCaDeLaN"
 
     lstm_alone = nn_id == "LSTM"
     n_arms, nq_arm = 0, 0
@@ -95,7 +96,7 @@ if __name__ == "__main__":
     if sample_offset > 0:
         print(f'#####\n Using sample offset {sample_offset}!!\n#####')
 
-    dataset_name = "quad_mass_dataset_run8"
+    dataset_name = "quad_mass_dataset_run9"
 
     model_folder = 'aliengo/' + nn_id
     dataset_path = 'data/datasets/' + dataset_name + '.npz'
@@ -133,8 +134,8 @@ if __name__ == "__main__":
             raw_train_qp = copy.deepcopy(train_qp)
             raw_test_qp = copy.deepcopy(test_qp)
 
-            train_euler = get_euler_from_pin_quat(raw_train_qp[:,3:7])
-            test_euler = get_euler_from_pin_quat(raw_test_qp[:,3:7])
+            train_euler = get_euler_from_mj_quat(raw_train_qp[:,3:7])
+            test_euler = get_euler_from_mj_quat(raw_test_qp[:,3:7])
             train_qp = jnp.hstack((raw_train_qp[:,0:3], train_euler, raw_train_qp[:,7:]))
             test_qp = jnp.hstack((raw_test_qp[:,0:3], test_euler, raw_test_qp[:,7:]))
 
@@ -165,7 +166,8 @@ if __name__ == "__main__":
              'net_arch_arm': [0, 0] if nq_arm == 0 else [16, 16],
              'net_arch_leg': [16, 16],
              'net_arch_base_rot': [16, 16],
-             'net_arch_pot': [16, 16],
+             'net_arch_pot': delan_size,
+             'net_arch_inertia_full': delan_size,
              'net_arch_mlp': [32, 32],
              'n_minibatch': minibatch,
              'learning_rate': 5.e-04,
@@ -173,6 +175,7 @@ if __name__ == "__main__":
              'init_tf': True,
              'act_ld': 'Softplus',
              'softplus_beta': 1.0,
+             'use_log_chol': use_log_chol,
             ## Extras
              'mass_ineq': mass_ineq,
              'skew_sym_ineq': skew_sym_ineq,
@@ -215,6 +218,7 @@ if __name__ == "__main__":
              'time_window': time_window,
              'history_stride': history_stride,
              'history_span': history_span,
+             'history_input': history_input,
              'f_log': f_log,
              'n_output': 6 if lstm_alone else 10, # residual base torque / environment context
              #
@@ -248,6 +252,11 @@ if __name__ == "__main__":
         case "CaDeLaN":
             nn_config = get_cadelan_pp_config(hyper)
             nn_type = CaDeLaN
+        case "LogCholCaDeLaN":
+            nn_config = get_cadelan_pp_config(hyper)
+            nn_type = LogCholCaDeLaN
+        case _:
+            raise ValueError("No value for 'nn_id' provided.")
 
     learned_model = nn_type(nv_dof_model, nn_config)
 
@@ -308,8 +317,6 @@ if __name__ == "__main__":
         rng, train_rng = jax.random.split(rng, num=2)
 
         train_model_state, _ = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer)
-        quit()
-        print("after quit")
 
         # Get Trained parameters for Evaluation
         eval_params = train_model_state.params
