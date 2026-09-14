@@ -1,13 +1,61 @@
-from typing import List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 from flax import struct, linen as nn
 
 from felan.models.math_utils import *
 from felan.models.lstm_black_box import LSTMBlackBox, LSTMBlackBoxConfig
-from felan.models.delan_pot_param import ComponentNN, ComponentConfig, DeLaNPotParam, DeLaNPotParamConfig, get_config_from_dict as get_delan_pp_config, get_L_from_output
+from felan.models.delan_pot_param import ComponentConfig, DeLaNPotParam, DeLaNPotParamConfig, get_L_from_output
+
+def get_pseudo_inertia_from_log_chol(params):
+    alpha, d1, d2, d3, s12, s13, s23, t1, t2, t3 = params
+
+    Uexp_input = jnp.array([
+        [jnp.exp(d1), s12,         s13,         t1],
+        [0.0,         jnp.exp(d2), s23,         t2],
+        [0.0,         0.0,         jnp.exp(d3), t3],
+        [0.0,         0.0,         0.0,         1.0],
+        ])
+
+    U = jnp.exp(alpha) * Uexp_input
+    J = U @ U.T
+
+    Sigma = J[:3, :3]
+    h = J[3, :3]
+    m = J[3, 3]
+
+    I = jnp.trace(Sigma) * jnp.eye(3) - Sigma
+    return m, h, I
+
+def spatial_inertia_from_params(m, h, I):
+    h_skew = skew_sym_matrix(h)
+    top = jnp.concatenate([m * jnp.eye(3), -h_skew], axis=1)
+    bot = jnp.concatenate([h_skew,          I     ], axis=1)
+    return jnp.concatenate([top, bot], axis=0)
+
+get_pseudo_inertia_from_log_chol_batch = jax.vmap(get_pseudo_inertia_from_log_chol)
+spatial_inertia_from_params_batch = jax.vmap(spatial_inertia_from_params)
+
+class ComponentNN(nn.Module):
+    config: ComponentConfig
+
+    @nn.compact
+    def __call__(self, x):
+
+        for hidden_dim in self.config.net_arch:
+            x = nn.Dense(hidden_dim, kernel_init=nn.initializers.xavier_uniform(), bias_init=nn.initializers.constant(0.01))(x)
+            x = apply_act_fn(x, self.config.activation_name)
+
+        x = nn.Dense(
+            self.config.n_output,
+            kernel_init=nn.initializers.normal(stddev=1e-2),
+            bias_init=nn.initializers.zeros
+        )(x)
+
+        return x
 
 class _DeLaNPotParam(DeLaNPotParam):
+    use_log_chol: bool = False
+
     def setup(self):
         self.inertia_net = ComponentNN(config=self.config.inertia_config)
 
@@ -36,15 +84,20 @@ class _DeLaNPotParam(DeLaNPotParam):
         self.vmap_dLdq_fn = jax.vmap(jax.jacrev(lagrangian_scalar, argnums=0), in_axes=(0, 0, 0))
         self.vmap_d2L_fn = jax.vmap(jax.jacfwd(jax.jacrev(lagrangian_scalar, argnums=1), argnums=(0, 1)), in_axes=(0, 0, 0))
 
-    def get_inertia_matrix(self, z):
-        Lfinal = self.vmap_get_L_from_output(
-            self.inertia_net(z),
-            self.inertia_net.config
-        )
+    def get_inertia_matrix(self, z):        
+        if self.use_log_chol:
+            params = self.inertia_net(z)
+            mass, h, I = get_pseudo_inertia_from_log_chol_batch(params)
+            H = spatial_inertia_from_params_batch(mass, h, I)
+        else:
+            Lfinal = self.vmap_get_L_from_output(
+                self.inertia_net(z),
+                self.inertia_net.config
+            )
 
-        # Final mass matrix: H = LL' (standard Cholesky)
-        H = Lfinal @ jnp.transpose(Lfinal, (0, 2, 1))
-        mass = jnp.trace(H[:,:3,:3], axis1=1, axis2=2) / 3.0
+            # Final mass matrix: H = LL' (standard Cholesky)
+            H = Lfinal @ jnp.transpose(Lfinal, (0, 2, 1))
+            mass = jnp.trace(H[:,:3,:3], axis1=1, axis2=2) / 3.0
         return H, mass
     
     def convert_inertia_to_vw_euler_rate(self, q_full, inertia_mat, rot_base_to_world, Wn_inv):
@@ -110,33 +163,36 @@ class _DeLaNPotParam(DeLaNPotParam):
         v_euler_rates, acc_euler_rates = self.get_euler_rates_and_acc(q_full, qd_full, qdd_full)
 
         dLdq = self.vmap_dLdq_fn(q_full, v_euler_rates, z)[:, :, None]
-        d2L_dqddq, d2Ld2qd = self.vmap_d2L_fn(q_full, v_euler_rates, z) 
+        d2L_dqddq, d2Ld2qd = self.vmap_d2L_fn(q_full, v_euler_rates, z)
 
         # Compute the predicted generalized force:
-        tau_pred = jnp.matmul(d2Ld2qd.squeeze(), acc_euler_rates) + jnp.matmul(d2L_dqddq.squeeze(), v_euler_rates) - dLdq
+        inertia_matrix, _ = self.get_inertia_matrix(z)
+        qfrc_bias = jnp.matmul(d2L_dqddq.squeeze(), v_euler_rates) - dLdq
+        tau_pred = jnp.matmul(d2Ld2qd.squeeze(), acc_euler_rates) + qfrc_bias
 
         tau_pred = self.gen_force_to_angular_frame(q_full, tau_pred).squeeze()
 
         dEdt = jnp.sum(qd_full * tau_pred, axis=1)
 
-        return tau_pred, dEdt
+        return tau_pred, dEdt, inertia_matrix, qfrc_bias
     
     def __call__(self, q, qd, qdd, z):
         out = self.dyn_model(q, qd, qdd, z)
         tau_pred = out[0]
         dEdt = out[1]
-        extras = {}
+        extras = {"M": out[2], "qfrc_bias": out[3]}
         return tau_pred, dEdt, extras
 
 @struct.dataclass
 class CaDelaNConfig:
     lstm_config: LSTMBlackBoxConfig
     delan_config: DeLaNPotParamConfig
+    use_log_chol: bool = False
 
 def get_config_from_dict(kwargs):
     lin_vel_dof = 3
     ang_vel_dof = 3
-    pot_config = None
+    use_log_chol = kwargs.get('use_log_chol', False)
 
     n_legs = kwargs.get('n_legs')
     nq_leg = kwargs.get('n_dof_leg')
@@ -147,13 +203,13 @@ def get_config_from_dict(kwargs):
     nq_full = lin_vel_dof + ang_vel_dof 
 
     ## Inertia Net
-    l_output_size = int((nq_full ** 2 + nq_full) / 2)
+    l_output_size = 10 if use_log_chol else int((nq_full ** 2 + nq_full) / 2) # log-cholesky parameters
     l_diag_size = nq_full
     l_lower_size = l_output_size - l_diag_size
 
     l_tril_indices_nq = jnp.tril_indices(nq_full)
     l_idx_nq = get_idx_triangular(nq_full, l_output_size)
-
+    
     inertia_config = ComponentConfig(
         n_output=l_output_size,
         nq=nq_full,
@@ -169,8 +225,7 @@ def get_config_from_dict(kwargs):
         l_lower_size=l_lower_size,
         tril_indices_nq=l_tril_indices_nq,
         idx_nq=l_idx_nq,
-    )
-    
+    )    
 
     # Need Potential Network
     pot_config = ComponentConfig(
@@ -202,7 +257,7 @@ def get_config_from_dict(kwargs):
         dropout_rate=kwargs.get('lstm_dropout', 0.0),
     )
 
-    return CaDelaNConfig(lstm_config=lstm_config, delan_config=delan_config)
+    return CaDelaNConfig(lstm_config=lstm_config, delan_config=delan_config, use_log_chol=use_log_chol)
 
 class CaDeLaN(nn.Module):
     n_dof: int
@@ -210,9 +265,18 @@ class CaDeLaN(nn.Module):
 
     def setup(self):
         self.lstm  = LSTMBlackBox(n_dof=self.n_dof, config=self.config.lstm_config)
-        self.delan = _DeLaNPotParam(n_dof=self.n_dof, config=self.config.delan_config)
+        self.delan = _DeLaNPotParam(n_dof=self.n_dof, config=self.config.delan_config, use_log_chol=self.config.use_log_chol)
 
     def __call__(self, q, qd, qdd, history):
-        z, _, _ = self.lstm(q, qd, qdd, history)
+        z, _, _ = self.lstm(None, None, None, history)
         tau_pred, dEdt, extras = self.delan(q, qd, qdd, z)
         return tau_pred, dEdt, extras
+
+class LogCholCaDeLaN(CaDeLaN):
+    def setup(self):
+        if not self.config.use_log_chol:
+            raise ValueError(
+                "LogCholCaDeLaN was constructed with a config whose use_log_chol is False. "
+                "Pass kwargs['use_log_chol'] = True to get_config_from_dict."
+            )
+        super().setup()
