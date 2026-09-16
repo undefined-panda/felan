@@ -11,6 +11,8 @@ def eval_components(model, eval_params, eval_dataset, norm_tau = None):
     print("\n################################################")
     print("Model Evaluation:")
 
+    has_history = len(eval_dataset) == 8
+
     data_batches = data_loader(eval_dataset, batch_size=1000, shuffle=False)
     t0_eval = time.perf_counter()
 
@@ -21,19 +23,33 @@ def eval_components(model, eval_params, eval_dataset, norm_tau = None):
     q_all, qd_all, qdd_all = [], [], []
 
     for batch in data_batches:
-        q, qd, qdd, tau, tau_m, tau_c, tau_g = batch
+        if has_history:
+            q, qd, qdd, tau, tau_m, tau_c, tau_g, history = batch
+        else:
+            q, qd, qdd, tau, tau_m, tau_c, tau_g = batch
 
         qd_zeros = jnp.zeros_like(qd)
         if norm_tau is None:
             norm_tau = jnp.ones_like(tau)
 
+        if has_history:
+            eval_g, _, _   = model.apply(eval_params, q, qd_zeros, qd_zeros, history)
+            eval_c, _, _   = model.apply(eval_params, q, qd,       qd_zeros, history)
+            eval_m, _, _   = model.apply(eval_params, q, qd_zeros, qdd,      history)
+            eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd, history)
+        else:
+            eval_g, _, _   = model.apply(eval_params, q, qd_zeros, qd_zeros)
+            eval_c, _, _   = model.apply(eval_params, q, qd,       qd_zeros)
+            eval_m, _, _   = model.apply(eval_params, q, qd_zeros, qdd)
+            eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
+
         # Evaluate Components
-        eval_g, _, _ = model.apply(eval_params, q, qd_zeros, qd_zeros)
-        eval_c, _, _ = model.apply(eval_params, q, qd, qd_zeros)
-        eval_m, _, _ = model.apply(eval_params, q, qd_zeros, qdd)
+        # eval_g, _, _ = model.apply(eval_params, q, qd_zeros, qd_zeros)
+        # eval_c, _, _ = model.apply(eval_params, q, qd, qd_zeros)
+        # eval_m, _, _ = model.apply(eval_params, q, qd_zeros, qdd)
         eval_c = eval_c - eval_g
         eval_m = eval_m - eval_g
-        eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
+        # eval_tau, eval_dEdt, _ = model.apply(eval_params, q, qd, qdd)
         test_dEdt = jnp.sum(tau * qd, axis=1)
 
         # Collect outputs
@@ -335,7 +351,10 @@ def plot_components(eval_results, eval_dataset, test_labels, divider, model_type
 
 
 def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_folder, model_name, render = True, force_index = [], norm_tau = None, repo_dir = ''):
-    q, qd, qdd, test_tau, test_m, test_c, test_g = eval_dataset
+    if len(eval_dataset) == 8:
+        q, qd, qdd, test_tau, test_m, test_c, test_g, _ = eval_dataset
+    else:
+        q, qd, qdd, test_tau, test_m, test_c, test_g = eval_dataset
     _, _, _, eval_tau, eval_m, eval_c, eval_g = eval_results
     n_dof = test_tau.shape[-1]
 
@@ -375,12 +394,13 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         y_g_low = jnp.concatenate((y_g_low, -10*jnp.ones(1)))
         y_g_max = jnp.concatenate((y_g_max, 10*jnp.ones(1)))
 
-    plt.rc('text', usetex=True)
+    plt.rc('text', usetex=False)
     color_i = ["r", "b", "g", "k"]
 
     ticks = jnp.array(divider)
     ticks = (ticks[:-1] + ticks[1:]) / 2
 
+    figs = []
     for i in range(0, n_dof, 2):
 
         fig = plt.figure(figsize=(24.0/1.54, 8.0/1.54), dpi=100)
@@ -393,7 +413,7 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         # Plot Torque
         ax0 = fig.add_subplot(2, 1, 1)
         # ax0.set_title(r"$\boldsymbol{\tau}$")
-        ax0.set_title('Torque')
+        ax0.set_title(f'Joint {i} — Torque')
         ax0.text(s=f'Joint {i}', x=-0.35, y=.5, fontsize=12, fontweight="bold", rotation=90, horizontalalignment="center", verticalalignment="center", transform=ax0.transAxes)
         if i in force_index:
             ax0.set_ylabel("Force [N]")
@@ -407,11 +427,12 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         ax0.set_xlim(divider[0], divider[-1])
 
         ax1 = fig.add_subplot(2, 1, 2)
+        ax1.set_title(f'Joint {i+1} — Torque')
         ax1.text(s=f'Joint {i+1}', x=-.35, y=0.5, fontsize=12, fontweight="bold", rotation=90,
                 horizontalalignment="center", verticalalignment="center", transform=ax1.transAxes)
 
-        ax1.text(s=r"\textbf{(a)}", x=.5, y=-0.25, fontsize=12, fontweight="bold", horizontalalignment="center",
-                verticalalignment="center", transform=ax1.transAxes)
+        # ax1.text(s=r"\textbf{(a)}", x=.5, y=-0.25, fontsize=12, fontweight="bold", horizontalalignment="center",
+        #         verticalalignment="center", transform=ax1.transAxes)
 
         if i in force_index:
             ax1.set_ylabel("Force [N]")
@@ -442,7 +463,10 @@ def plot_torques(eval_results, eval_dataset, test_labels, divider, model_type_fo
         fig.savefig(f"{fig_dir}/joints_torque_{i}_{i+1}.pdf", format="pdf")
         fig.savefig(f"{fig_dir}/joints_torque_{i}_{i+1}.png", format="png")
 
+        figs.append(fig)
+
     if render:
         plt.show()
 
     print("\n################################################\n\n\n")
+    return figs

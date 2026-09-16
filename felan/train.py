@@ -72,8 +72,12 @@ def count_parameters(params):
     
 # Loss 
 def loss_fn(state, params, batch_data, config: TrainConfig):
-    q, qd, qdd, tau = batch_data
-    tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd)
+    if len(batch_data) == 5: # with history for LSTM
+        q, qd, qdd, tau, history = batch_data
+        tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd, history)
+    else: # without history
+        q, qd, qdd, tau = batch_data
+        tau_hat, dEdt_hat, extras = state.apply_fn(params, q, qd, qdd)
 
     # Compute the loss of the Euler-Lagrange Differential Equation:
     err_inv = jnp.sum((tau_hat - tau) ** 2 / config.norm_tau, axis=1)
@@ -160,7 +164,7 @@ def train_step(state, batch, config: TrainConfig):
 
     return state, loss, metrics
 
-def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None):
+def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None, eval_fn = None):
     # Start Training Loop:
     t0_start = time.perf_counter()
     t_avg_epoch = 0.0
@@ -259,6 +263,9 @@ def train_model(state, dataset, rng, config: TrainConfig, tb_writer = None):
 
                 for k, v in epoch_metrics.items():
                     tb_writer.add_scalar(f"train/{k}", v, epoch)
+
+                if eval_fn is not None:
+                    eval_fn(state, epoch)
 
                 if config.save_checkpoint_model:
                     checkpoints.save_checkpoint(
