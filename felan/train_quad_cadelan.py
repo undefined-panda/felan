@@ -20,6 +20,9 @@ if os.getenv("DISPLAY"):
         pass
 repo_dir = os.path.dirname(os.path.abspath(__file__))
 
+import wandb
+wandb.tensorboard.patch(root_logdir=repo_dir + '/tensorboard')
+
 from tensorboardX import SummaryWriter
 from felan.data_scripts.jax_utils import init_env
 from felan.data_scripts.data_loaders import load_custom_dataset
@@ -43,6 +46,7 @@ if __name__ == "__main__":
     parser.add_argument("-m", nargs=1, type=int, required=False, default=[1, ], help="Save the model")
     parser.add_argument("--epochs", type=int, default=3000)
     parser.add_argument("--nn", type=str, default="LSTM", choices=["LSTM", "CaDeLaN", "LogCholCaDeLaN"])
+    parser.add_argument("--seeds", type=int, nargs="+", default=[0])
     parser.add_argument("--lstm_num_layers", type=int, default=5, help="Number of stacked LSTM layers in the context encoder")
     parser.add_argument("--lstm_hidden_size", type=int, default=10, help="Hidden size of each LSTM layer")
     parser.add_argument("--delan_size", type=int, nargs="+", default=[16,16])
@@ -55,6 +59,7 @@ if __name__ == "__main__":
 
     epochs = args.epochs
     nn_id = args.nn
+    seed_list = args.seeds
     lstm_num_layers = args.lstm_num_layers
     lstm_hidden_size = args.lstm_hidden_size
     delan_size = args.delan_size
@@ -65,6 +70,7 @@ if __name__ == "__main__":
 
     lstm_alone = nn_id == "LSTM"
     n_arms, nq_arm = 0, 0
+    robot_prefix = "aliengo"
 
     minibatch = 1024
     loss_power = False
@@ -231,105 +237,138 @@ if __name__ == "__main__":
         norm_tau = jnp.ones(nv_dof_full)
     print(f'Norm Tau:\n{norm_tau}')
 
-    ## Define Model Name
-    model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + history_input + '_seed_' + str(seed)
-    model_name += f"_lstm{hyper['lstm_num_layers']}x{hyper['lstm_hidden_size']}"
-    model_name += f"_span{hyper['history_span']}-stride{hyper['history_stride']}"
+    def train_with_seed(config=None):
+        with wandb.init(config=config, settings=wandb.Settings(symlink=False), sync_tensorboard=True):
+            config = wandb.config
+            seed = config.seed
 
-    rng = jax.random.PRNGKey(seed)
+            ## Define Model Name
+            model_name = 'epochs_' + str(hyper['max_epoch']) + '_' + dataset_name + '_input_values_' + history_input + '_seed_' + str(seed)
+            model_name += f"_lstm{hyper['lstm_num_layers']}x{hyper['lstm_hidden_size']}"
+            model_name += f"_span{hyper['history_span']}-stride{hyper['history_stride']}"
 
-    train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
-    test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
+            wandb.run.name = model_name
+            wandb.config.update(hyper, allow_val_change=True)
 
-    train_dataset = create_dataset(train_input_list)
-    eval_dataset = create_dataset(test_input_list)
+            rng = jax.random.PRNGKey(seed)
 
-    # Construct model:
-    match nn_id:
-        case "LSTM":
-            nn_config = get_lstm_config(hyper)
-            nn_type = LSTMBlackBox
-        case "CaDeLaN":
-            nn_config = get_cadelan_pp_config(hyper)
-            nn_type = CaDeLaN
-        case "LogCholCaDeLaN":
-            nn_config = get_cadelan_pp_config(hyper)
-            nn_type = LogCholCaDeLaN
-        case _:
-            raise ValueError("No value for 'nn_id' provided.")
+            train_input_list = [train_qp, train_qv, train_qa, train_tau, train_history]
+            test_input_list = [test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g, test_history]
 
-    learned_model = nn_type(nv_dof_model, nn_config)
+            train_dataset = create_dataset(train_input_list)
+            eval_dataset = create_dataset(test_input_list)
 
-    folder_path = repo_dir + f"/trained_models/{model_folder}"
+            # Construct model:
+            match nn_id:
+                case "LSTM":
+                    nn_config = get_lstm_config(hyper)
+                    nn_type = LSTMBlackBox
+                case "CaDeLaN":
+                    nn_config = get_cadelan_pp_config(hyper)
+                    nn_type = CaDeLaN
+                case "LogCholCaDeLaN":
+                    nn_config = get_cadelan_pp_config(hyper)
+                    nn_type = LogCholCaDeLaN
+                case _:
+                    raise ValueError("No value for 'nn_id' provided.")
 
-    if load_model:
-        ################# Load Model #################
-        eval_params, _ = load_model_fn(model_name, folder_path)
+            learned_model = nn_type(nv_dof_model, nn_config)
 
-    else:
-        ################# Train Model #################
+            folder_path = repo_dir + f"/trained_models/{model_folder}"
 
-        ## Initialize Model Parameters
-        dumb_n_batch = 5
-        dumb_q = jnp.zeros((dumb_n_batch, nq_dof_model))
-        dumb_qd = jnp.zeros((dumb_n_batch, nv_dof_model))
-        dumb_history = jnp.zeros((dumb_n_batch, time_window, train_history.shape[-1]))
-        rng, param_rng = jax.random.split(rng, num=2)
-        params = learned_model.init(param_rng, dumb_q, dumb_qd, dumb_qd, dumb_history)
+            if load_model:
+                ################# Load Model #################
+                eval_params, _ = load_model_fn(model_name, folder_path)
 
-        # Check number of parameters
-        sum_param = count_parameters(params)
-        print(f'Number of model parameters {sum_param}')
+            else:
+                ################# Train Model #################
 
-        # Training Parameters:
-        print("\n################################################")
-        if nn_id == 'MjxDNEA':
-            print(f"Training {learned_model.__class__.__name__} ({hyper['dyn_parametrization']}):")
-        else:
-            print(f"Training {learned_model.__class__.__name__}:")
+                ## Initialize Model Parameters
+                dumb_n_batch = 5
+                dumb_q = jnp.zeros((dumb_n_batch, nq_dof_model))
+                dumb_qd = jnp.zeros((dumb_n_batch, nv_dof_model))
+                dumb_history = jnp.zeros((dumb_n_batch, time_window, train_history.shape[-1]))
+                rng, param_rng = jax.random.split(rng, num=2)
+                params = learned_model.init(param_rng, dumb_q, dumb_qd, dumb_qd, dumb_history)
 
-            # Init Tensorboard
-        tb_folder = repo_dir + f"/tensorboard/{model_folder}/{model_name}"
-        tb_writer = SummaryWriter(log_dir=tb_folder)
+                # Check number of parameters
+                sum_param = count_parameters(params)
+                print(f'Number of model parameters {sum_param}')
 
-        # Init Optimizer
-        optimizer = optax.adamw(
-            learning_rate=hyper["learning_rate"],
-            weight_decay=hyper["weight_decay"]
-        )
+                # Training Parameters:
+                print("\n################################################")
+                if nn_id == 'MjxDNEA':
+                    print(f"Training {learned_model.__class__.__name__} ({hyper['dyn_parametrization']}):")
+                else:
+                    print(f"Training {learned_model.__class__.__name__}:")
 
-        opt_state = train_state.TrainState.create(apply_fn = learned_model.apply,
-                                                   params = params,
-                                                   tx = optimizer)
+                # Init Tensorboard
+                tb_folder = repo_dir + f"/tensorboard/{model_folder}/{model_name}"
+                tb_writer = SummaryWriter(log_dir=tb_folder)
+
+                # Init Optimizer
+                optimizer = optax.adamw(
+                    learning_rate=hyper["learning_rate"],
+                    weight_decay=hyper["weight_decay"]
+                )
+
+                opt_state = train_state.TrainState.create(apply_fn = learned_model.apply,
+                                                        params = params,
+                                                        tx = optimizer)
+                
+                train_config = TrainConfig(num_epochs = hyper['max_epoch'],
+                                        loss_power = loss_power,
+                                        norm_tau = norm_tau,
+                                        batch_size = hyper['n_minibatch'],
+                                        log_period = log_period,
+                                        hyper = hyper,
+                                        tb_folder = tb_folder,
+                                        repo_dir = repo_dir,
+                                        save_checkpoint_model = save_checkpoint_model,
+                                        )
+
+                # # Train Model
+                rng, train_rng = jax.random.split(rng, num=2)
+
+                train_model_state, train_metrics = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer)
+                wandb.log({f"final_train/{k}": v for k, v in train_metrics.items()})
+
+                # Get Trained parameters for Evaluation
+                eval_params = train_model_state.params
+
+                # Save the Model:
+                if save_model:
+                    save_model_fn(train_model_state.params, hyper, model_name, folder_path)
+
+
+            ################# Evaluate Model #################
+            norm_tau_eval = norm_tau
+            eval_results, eval_metrics = eval_components(learned_model, eval_params, eval_dataset, norm_tau_eval)
+            wandb.log({f"eval/{k}": v for k, v in eval_metrics.items()})
+
+            ################# Plot Results #################
+            # plot_components(eval_results, eval_dataset, test_labels, divider, model_folder, model_name, render, force_index=[0, 1, 2], repo_dir=repo_dir)
+            plot_dataset = (eval_dataset[0], eval_dataset[1], eval_dataset[2],
+                            eval_dataset[3], eval_dataset[4], eval_dataset[5],
+                            eval_dataset[6])
         
-        train_config = TrainConfig(num_epochs = hyper['max_epoch'],
-                                   loss_power = loss_power,
-                                   norm_tau = norm_tau,
-                                   batch_size = hyper['n_minibatch'],
-                                   log_period = log_period,
-                                   hyper = hyper,
-                                   tb_folder = tb_folder,
-                                   repo_dir = repo_dir,
-                                   save_checkpoint_model = save_checkpoint_model,
-                                )
+            n_test_post = test_qp.shape[0]
+            plot_divider = np.linspace(0, n_test_post, len(test_labels) + 1).astype(int)
+        
+            plot_labels = [f"{lbl}\nMass: ({m:.2f})" for lbl, m in zip(test_labels, test_base_mass)]
+        
+            figs = plot_torques(eval_results, plot_dataset, plot_labels, plot_divider,
+                                model_folder, model_name, render, force_index=[0, 1, 2],
+                                norm_tau=norm_tau_eval, repo_dir=repo_dir)
+            
+            wandb.log({f"eval/torques_joints_{2*i}_{2*i+1}": wandb.Image(fig) for i, fig in enumerate(figs)})
+            for fig in figs:
+                plt.close(fig)
 
-        # # Train Model
-        rng, train_rng = jax.random.split(rng, num=2)
-
-        train_model_state, _ = train_model(opt_state, train_dataset, train_rng, train_config, tb_writer)
-
-        # Get Trained parameters for Evaluation
-        eval_params = train_model_state.params
-
-        # Save the Model:
-        if save_model:
-            save_model_fn(train_model_state.params, hyper, model_name, folder_path)
-
-
-    ################# Evaluate Model #################
-    norm_tau_eval = norm_tau
-    eval_results, eval_metrics = eval_components(learned_model, eval_params, eval_dataset, norm_tau_eval)
-
-
-    ################# Plot Results #################
-    # plot_components(eval_results, eval_dataset, test_labels, divider, model_folder, model_name, render, force_index=[0, 1, 2], repo_dir=repo_dir)
+    sweep_config = {
+        'method': 'grid',
+        'parameters': {'seed': {'values': seed_list}},
+    }
+    project_name = f"cadelac-{robot_prefix}-{epochs}"
+    sweep_id = wandb.sweep(sweep_config, project=project_name)
+    wandb.agent(sweep_id, train_with_seed)
